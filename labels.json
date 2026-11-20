@@ -1,0 +1,16 @@
+{
+  "confirmed": true,
+  "counting_rule": "只统计前景黑色托盘承载面上额外放置的物品；固定螺丝、托盘结构、绿箱和桌面上的物品不计数。一袋线缆或一束黑色线缆各算一件。",
+  "images": [
+    {"file": "image_01.png", "count": 0, "note": "空托盘"},
+    {"file": "image_02.png", "count": 1, "note": "black box（用户确认的物品名称）"},
+    {"file": "image_03.png", "count": 1, "note": "袋装方形物品"},
+    {"file": "image_04.png", "count": 2, "note": "两袋蓝色线缆"},
+    {"file": "image_05.png", "count": 2, "note": "两袋蓝色线缆，有重叠，用户确认"},
+    {"file": "image_06.png", "count": 0, "note": "空托盘"},
+    {"file": "image_07.png", "count": 2, "note": "两袋蓝色线缆叠放，用户纠正并确认"},
+    {"file": "image_08.png", "count": 1, "note": "一束黑色线缆"},
+    {"file": "image_09.png", "count": 0, "note": "空托盘"},
+    {"file": "image_10.png", "count": 1, "note": "一袋蓝色线缆"}
+  ]
+}

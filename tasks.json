@@ -1,0 +1,96 @@
+{
+  "mapping_confirmed": true,
+  "mapping_note": "任务2由用户明确对应03：袋装方形物品，数量1；其余任务按对应类别图片测试，判空加入02、08、03作为非空反例。",
+  "base_url": "http://115.120.57.9/3dvlm",
+  "max_new_tokens": 64,
+  "tasks": [
+    {
+      "id": "empty",
+      "title": "任务1：判断黑色托盘是否为空",
+      "kind": "empty",
+      "cases": [
+        {
+          "file": "image_01.png",
+          "expected": true,
+          "role": "空托盘样本"
+        },
+        {
+          "file": "image_06.png",
+          "expected": true,
+          "role": "空托盘样本"
+        },
+        {
+          "file": "image_09.png",
+          "expected": true,
+          "role": "空托盘样本"
+        },
+        {
+          "file": "image_02.png",
+          "expected": false,
+          "role": "非空反例"
+        },
+        {
+          "file": "image_08.png",
+          "expected": false,
+          "role": "非空反例"
+        },
+        {
+          "file": "image_03.png",
+          "expected": false,
+          "role": "非空反例"
+        }
+      ]
+    },
+    {
+      "id": "square_item",
+      "title": "任务2：判断黑色托盘有多少个袋装方形物品",
+      "kind": "count",
+      "cases": [
+        {
+          "file": "image_03.png",
+          "expected": 1,
+          "role": "目标样本"
+        }
+      ]
+    },
+    {
+      "id": "blue_wire",
+      "title": "任务3：判断黑色托盘有多少个蓝色线缆",
+      "kind": "count",
+      "cases": [
+        {
+          "file": "image_04.png",
+          "expected": 2,
+          "role": "目标样本"
+        },
+        {
+          "file": "image_05.png",
+          "expected": 2,
+          "role": "目标样本"
+        },
+        {
+          "file": "image_07.png",
+          "expected": 2,
+          "role": "目标样本"
+        },
+        {
+          "file": "image_10.png",
+          "expected": 1,
+          "role": "目标样本"
+        }
+      ]
+    },
+    {
+      "id": "black_wire",
+      "title": "任务4：判断黑色托盘有多少个黑色线缆",
+      "kind": "count",
+      "cases": [
+        {
+          "file": "image_08.png",
+          "expected": 1,
+          "role": "目标样本"
+        }
+      ]
+    }
+  ]
+}
