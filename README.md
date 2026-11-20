@@ -4,7 +4,7 @@
 
 ## 文件职责
 
-- `evaluate.py`：四任务英文 `PROMPTS`、图片映射加载、服务调用、答案解析、评分和报告生成。
+- `evaluate.py`：四任务英文 `PROMPTS`、图片映射加载、MoTVLM 与本地 Codex CLI 调用、评分和报告生成。
 - `tasks.json`：任务ID、对应图片、真值和样本用途。
 - `images/`：10张原图。
 - `tests/`：解析、评分和任务执行的验证。
@@ -26,38 +26,40 @@
 03为袋装方形物品。全部真值已由用户确认。
 
 当前英文术语统一为 **wire**，任务ID使用 `blue_wire`、`black_wire`。
-当前运行结果保存到 `results/tasks-wire-v2/`（判空新增03非空反例）。
 
 ## 运行
 
+用 `--backend` 在 MoTVLM 和 Codex Astra 之间切换。两个后端共用同一套图片、英文提示词、真值和评分规则。省略 `--backend` 时默认使用 MoTVLM。
+
+| 后端 | 运行评测 | 根据已有响应生成报告 | 默认结果目录 |
+|---|---|---|---|
+| MoTVLM | `python3 evaluate.py run --backend motvlm` | `python3 evaluate.py report --backend motvlm` | `results/tasks-wire-v2/` |
+| Codex Astra | `python3 evaluate.py run --backend astra` | `python3 evaluate.py report --backend astra` | `results/tasks-astra/` |
+
+MoTVLM 调用 `tasks.json` 中配置的 HTTP 服务（默认 `http://115.120.57.9/3dvlm`），使用 `layout=single_image` 和 64 token 输出上限。Astra 通过本机已登录的 Codex CLI 请求 `gpt-6-astra`（推理强度 `low`），每道题使用一个临时会话。
+
+每个后端有自己的默认结果目录。`run` 会跳过该目录中已有记录的用例，包括失败记录。请求失败时会停止，可在日志中查看原因。要从头重跑，或在修改提示词、映射、真值或图片后开始新一轮，请用 `--output` 指定新目录。生成报告时使用同一个后端和目录。
+
 ```sh
-python3 evaluate.py run
-python3 evaluate.py report
+python3 evaluate.py run --backend astra --output results/astra-rerun
+python3 evaluate.py report --backend astra --output results/astra-rerun
+```
+
+`--tasks`、`--images` 和 `--timeout` 分别指定任务配置、图片目录和请求超时。运行代码测试可用以下命令。
+
+```sh
 python3 -m unittest discover -s tests -v
 ```
 
-`run` 调用 `tasks.json` 指定的服务（默认 `http://115.120.57.9/3dvlm`），
-使用 `layout=single_image` 和64 token输出上限。`report` 仅用已有原始响应生成报告。
-
-默认输出到 `results/tasks-wire-v2/`：
+评测产物包括以下文件。
 
 - `report.html`：按任务分组，嵌入原图、真值、预测与原始回答，可离线查看。
 - `report.md` / `summary.json`：逐图结果和任务汇总。
 - `results.csv`：逐图评分数据。
 - `responses.jsonl`：原始响应、错误、UTC时间与耗时。
 - `config.json`：使用的任务配置、完整英文提示词、真值与图片哈希。
-- `health.json`：服务健康信息。
+- `health.json`：MoTVLM 服务健康信息。
 - `findings.md`：本轮结果分析；重新生成报告不会自动改写。
-
-已有记录（包括失败记录）不会自动重试。请求失败时停止，先检查日志与服务状态。
-修改提示词、映射、真值或图片后，使用新的输出目录：
-
-```sh
-python3 evaluate.py run --output results/tasks-v2
-python3 evaluate.py report --output results/tasks-v2
-```
-
-可通过 `--tasks`、`--images`、`--output`、`--timeout` 指定配置、图片、输出目录和请求超时。
 
 ## 指标与已有结果
 

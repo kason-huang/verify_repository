@@ -9,12 +9,16 @@ import json
 import mimetypes
 from pathlib import Path
 import re
+import subprocess
+import tempfile
 import time
 from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent
+ASTRA_MODEL = "gpt-6-astra"
+ASTRA_REASONING_EFFORT = "low"
 REGION = (
     "Look only at the load-bearing surface of the black tray in the foreground, "
     "in front of the green bin. "
@@ -56,6 +60,53 @@ def request_json(url, payload=None, timeout=180):
     )
     with opener.open(request, timeout=timeout) as response:
         return json.load(response)
+
+
+def request_astra(image_path, question, timeout):
+    # Give each session a neutral image filename and a working directory without labels.
+    with tempfile.TemporaryDirectory(prefix="tray-astra-") as directory:
+        image = Path(directory) / f"input{image_path.suffix}"
+        image.write_bytes(image_path.read_bytes())
+        result = subprocess.run(
+            [
+                "codex", "exec", "--ignore-user-config", "--ephemeral",
+                "--skip-git-repo-check", "--sandbox", "read-only",
+                "--disable", "shell_tool", "--disable", "multi_agent",
+                "--disable", "view_image", "--disable", "image_generation",
+                "--disable", "apps",
+                "-c", 'web_search="disabled"',
+                "-c", 'developer_instructions="Answer the user question from the attached image alone. Do not call tools."',
+                "-C", directory, "-m", ASTRA_MODEL,
+                "-c", f'model_reasoning_effort="{ASTRA_REASONING_EFFORT}"',
+                "--json", "-i", str(image), "--", "-",
+            ],
+            input=question, capture_output=True, text=True, timeout=timeout,
+        )
+    events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    finished = [e for e in events if e["type"] == "turn.completed"]
+    if result.returncode or not finished:
+        failure = next((e.get("error", {}).get("message") for e in reversed(events)
+                        if e["type"] == "turn.failed"), None)
+        raise ValueError(f"Codex CLI did not finish: {failure or result.stderr.strip()[-1200:] or result.returncode}")
+    answers = []
+    warnings = []
+    for event in events:
+        if not event["type"].startswith("item."):
+            continue
+        item = event["item"]
+        if item["type"] == "error":
+            # Codex also emits nonfatal metadata and connection notices as error items.
+            if event["type"] == "item.completed":
+                warnings.append(item.get("message", "Codex CLI warning"))
+            continue
+        if item["type"] not in {"agent_message", "reasoning"}:
+            raise ValueError(f'Unexpected Codex activity in image-only evaluation: {item["type"]}')
+        if event["type"] == "item.completed" and item["type"] == "agent_message":
+            answers.append(item["text"])
+    if len(answers) != 1 or not answers[0].strip():
+        raise ValueError("Expected one nonempty final Codex answer")
+    return {"text": answers[0], "requested_model": ASTRA_MODEL,
+            "usage": finished[-1].get("usage"), "backend": "codex_cli", "warnings": warnings}
 
 
 def load_tasks(path):
@@ -197,16 +248,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["run", "report"])
     parser.add_argument("--tasks", type=Path, default=ROOT / "tasks.json")
-    parser.add_argument("--output", type=Path, default=ROOT / "results" / "tasks-wire-v2")
+    parser.add_argument("--backend", choices=["motvlm", "astra"], default="motvlm")
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--images", type=Path, default=ROOT / "images")
     parser.add_argument("--timeout", type=float, default=180)
     args = parser.parse_args()
+    if args.output is None:
+        directory = "tasks-astra" if args.backend == "astra" else "tasks-wire-v2"
+        args.output = ROOT / "results" / directory
     config = load_tasks(args.tasks)
     if not config.get("mapping_confirmed"):
         parser.error("Task/image mapping is pending clarification; no model requests submitted")
     hashes = {case["file"]: hashlib.sha256((args.images / case["file"]).read_bytes()).hexdigest()
               for task in config["tasks"] for case in task["cases"]}
     snapshot = {"tasks_config": config, "image_sha256": hashes}
+    if args.backend == "astra":
+        snapshot["backend"] = {"name": "codex_cli", "requested_model": ASTRA_MODEL,
+                               "reasoning_effort": ASTRA_REASONING_EFFORT}
     args.output.mkdir(parents=True, exist_ok=True)
     path = args.output / "config.json"
     if path.exists():
@@ -223,24 +281,29 @@ def main():
             record = json.loads(line)
             records[(record["task"], record["file"])] = record
     if args.command == "run":
-        health = request_json(config["base_url"] + "/health", timeout=min(args.timeout, 15))
-        (args.output / "health.json").write_text(json.dumps(health, indent=2))
-        if not health.get("ready") or health.get("busy"):
-            raise RuntimeError("Service not ready or busy")
+        if args.backend == "motvlm":
+            health = request_json(config["base_url"] + "/health", timeout=min(args.timeout, 15))
+            (args.output / "health.json").write_text(json.dumps(health, indent=2))
+            if not health.get("ready") or health.get("busy"):
+                raise RuntimeError("Service not ready or busy")
         for task in config["tasks"]:
             for case in task["cases"]:
                 key = (task["id"], case["file"])
                 if key in records:
                     continue
                 image_path = args.images / case["file"]
-                data = f'data:{mimetypes.guess_type(image_path.name)[0]};base64,' + base64.b64encode(image_path.read_bytes()).decode()
                 record = {"task": key[0], "file": key[1], "started_at": datetime.now(timezone.utc).isoformat()}
                 started = time.monotonic()
                 try:
-                    response = request_json(config["base_url"] + "/generate", {
-                        "question": task["prompt"], "images": [data], "layout": "single_image",
-                        "max_new_tokens": config["max_new_tokens"],
-                    }, timeout=args.timeout)
+                    if args.backend == "astra":
+                        response = request_astra(image_path, task["prompt"], args.timeout)
+                    else:
+                        mime = mimetypes.guess_type(image_path.name)[0]
+                        data = f"data:{mime};base64," + base64.b64encode(image_path.read_bytes()).decode()
+                        response = request_json(config["base_url"] + "/generate", {
+                            "question": task["prompt"], "images": [data], "layout": "single_image",
+                            "max_new_tokens": config["max_new_tokens"],
+                        }, timeout=args.timeout)
                     record["response"] = response
                     if not isinstance(response, dict) or not isinstance(response.get("text"), str):
                         raise ValueError("Missing model answer")
@@ -249,7 +312,7 @@ def main():
                     record["text"] = response["text"]
                 except urllib.error.HTTPError as error:
                     record["error"] = f"HTTP {error.code}: {error.read(4096).decode(errors='replace')}"
-                except (OSError, ValueError) as error:
+                except (OSError, ValueError, subprocess.TimeoutExpired) as error:
                     record["error"] = str(error)
                 record["seconds"] = round(time.monotonic() - started, 3)
                 with log.open("a", encoding="utf-8") as stream:
