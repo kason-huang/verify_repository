@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>S2 实时试跑</title>
+<style>
+:root{color-scheme:light;--ink:#152b31;--muted:#496269;--line:#d5e4e4;--green:#057565;--white:#fff;--soft:#e6f4ef;--error:#9b352e}*{box-sizing:border-box}body{margin:0;background:#f3f8f7;color:var(--ink);font:15px/1.55 system-ui,sans-serif}main{width:min(1170px,100%);margin:auto;padding:36px 20px 56px}header{margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;gap:10px}h1{font-size:clamp(26px,4vw,38px);line-height:1.15;margin:0 0 6px}h2{font-size:18px;margin:0 0 10px}h3{font-size:15px;margin:0 0 8px}p{margin:0}a{color:var(--green)}.muted{color:var(--muted)}.controls,.panel{background:var(--white);border:1px solid var(--line);border-radius:14px;padding:16px}.controls{display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin-bottom:14px}label{display:grid;gap:4px;color:var(--muted);font-size:13px}select,button{font:inherit;border:1px solid var(--line);border-radius:8px;background:#fff;padding:8px 12px;color:var(--ink)}button{cursor:pointer}button:disabled,select:disabled{opacity:.5;cursor:default}button:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--green);outline-offset:2px}.primary{background:var(--green);border-color:var(--green);color:#fff;font-weight:600}.stop{color:var(--error)}.grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px;align-items:start}video{display:block;aspect-ratio:4/3;width:100%;border-radius:8px;background:#14262b}.clock{margin-top:9px;display:flex;justify-content:space-between;gap:8px;font-variant-numeric:tabular-nums}.meter{display:block;width:100%;height:5px;margin-top:8px;accent-color:var(--green)}.status{padding:4px 10px;border-radius:999px;background:var(--soft);color:var(--green);font-size:13px;display:inline-block}.status.error,.failure{background:#fae9e7;color:var(--error)}.success{background:var(--soft);color:var(--green)}.uncertain,.retry{background:#fcf1d8;color:#734906}.latency{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}.latency div,.field{padding:8px;border:1px solid var(--line);border-radius:8px}.latency span,.field small{display:block;color:var(--muted);font-size:12px}.latency strong{font-variant-numeric:tabular-nums;font-size:18px}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0}.verdict{display:inline-block;border-radius:12px;padding:1px 8px}.stage{font-weight:600}.info{font-size:13px;margin-top:9px}.timeline{margin-top:14px}.events{display:grid;gap:6px}.events>button{display:grid;grid-template-columns:70px 100px 100px minmax(0,1fr);gap:7px;text-align:left;align-items:center}.events>button[aria-current=true]{border-color:var(--green);box-shadow:inset 3px 0 var(--green)}.evidence{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:12px}.evidence figure{margin:0}.evidence img{width:100%;display:block;border-radius:6px}.evidence figcaption{font-size:12px;margin-top:4px}.error-text{color:var(--error)}[hidden]{display:none!important}@media(max-width:760px){main{padding:22px 12px 40px}.grid{grid-template-columns:1fr}.events>button{grid-template-columns:64px 75px 90px minmax(0,1fr);font-size:13px}}@media(max-width:470px){header{display:block}header a{display:inline-block;margin-top:8px}.events>button p{grid-column:1/-1}}
+</style>
+</head>
+<body>
+<main>
+<header><div><h1>S2 实时试跑</h1><p id="task" class="muted"></p></div><a href="/">查看离线评测</a></header>
+<section class="controls" aria-label="试跑控制">
+  <label>视频<select id="episode" disabled></select></label>
+  <label>视觉模型<select id="model" disabled></select></label>
+  <button id="warmup" disabled>预热模型</button>
+  <button id="start" class="primary" disabled>开始监控</button>
+  <button id="pause" disabled>暂停播放</button>
+  <button id="stop" class="stop" disabled>停止监控</button>
+</section>
+<div class="grid">
+  <section class="panel" aria-label="实时播放">
+    <video id="video" playsinline preload="metadata" muted></video>
+    <div class="clock"><span id="clock">0.000 s</span><span id="duration" class="muted"></span></div>
+    <progress id="progress" class="meter" value="0" max="1" aria-label="播放进度"></progress>
+    <p class="muted info" id="sampling"></p>
+  </section>
+  <section class="panel" aria-label="模型结果">
+    <span id="status" class="status" role="status">正在准备</span>
+    <div class="latency">
+      <div><span>待处理窗口</span><strong id="queued">0</strong></div>
+      <div><span>当前推理耗时</span><strong id="elapsed">—</strong></div>
+      <div><span>上次推理耗时</span><strong id="lastLatency">—</strong></div>
+    </div>
+    <p id="warmupTiming" class="muted info" hidden></p>
+    <p id="pending" class="muted info"></p>
+    <p id="error" class="error-text info" hidden></p>
+    <div id="judgment"><p class="muted">开始监控后，新判断会显示在这里。</p></div>
+  </section>
+</div>
+<section class="panel timeline" aria-label="返回的判断">
+  <h2>判断时间线</h2><div id="events" class="events"><p class="muted">尚无本次试跑记录。</p></div>
+</section>
+</main>
+<script>
+const get = id => document.getElementById(id);
+const player = get('video');
+const create = (tag, text, style) => {
+  const node = document.createElement(tag);
+  if (text != null) node.textContent = text;
+  if (style) node.className = style;
+  return node;
+};
+const phases = {waiting:'等待', approaching:'接近盒子', grasping:'尝试抓取', lifting:'提起', retrying:'重新尝试', after_pick:'已完成抓取', unclear:'阶段不明'};
+const outcomes = {in_progress:'进行中', success:'成功', failure:'失败', uncertain:'无法确认'};
+const decisions = {continue:'继续', retry:'重试', intervene:'干预', finish:'结束', observe:'继续观察'};
+const statusText = {connecting:'正在连接模型', warming:'正在预热模型', ready:'预热完成，可以开始',
+  waiting:'等待视频窗口', inferencing:'VLM 推理中', complete:'监控完成', stopping:'正在停止', stopped:'监控已停止', error:'推理中断'};
+const seconds = (time, digits=3) => typeof time === 'number' ? `${time.toFixed(digits)} s` : '—';
+const terminal = new Set(['complete','stopped','error']);
+let options, current, starting = false, selected = null, lastTime = 0, sentEnd = false;
+let playbackStarted = false;
+let startWhenReady = false;
+let renderedKey = '', timer;
+
+async function request(path, body) {
+  const init = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {cache:'no-store'};
+  const response = await fetch(path, init);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+function error(message) {
+  const node = get('error');
+  node.hidden = !message;
+  node.textContent = message || '';
+}
+function loadVideo() {
+  const episode = options.episodes.find(item => item.id === get('episode').value);
+  player.pause(); player.src = episode.video; player.load();
+  get('duration').textContent = seconds(episode.duration_s);
+  get('progress').max = episode.duration_s;
+  showClock();
+}
+function showClock() {
+  get('clock').textContent = seconds(player.currentTime);
+  get('progress').value = player.currentTime;
+}
+function controls() {
+  const busy = starting || (current && !terminal.has(current.status));
+  const standby = current && !current.episode && current.status !== 'stopping';
+  get('warmup').disabled = !options || busy;
+  get('start').disabled = !options || starting || startWhenReady || (busy && !standby);
+  get('start').textContent = startWhenReady ? '预热后开始' : '开始监控';
+  get('episode').disabled = !options || (busy && !!current?.episode) || (starting && current?.status === 'ready');
+  get('model').disabled = !options || busy;
+  get('pause').disabled = !current || !busy || !playbackStarted || player.ended || current.status === 'stopping';
+  get('pause').textContent = player.paused ? '继续播放' : '暂停播放';
+  get('stop').disabled = !current || !busy || current.status === 'stopping';
+}
+function showResult(row) {
+  const panel = get('judgment'); panel.replaceChildren();
+  if (!row?.answer) {
+    panel.append(create('p',row?.error || '正在等待本次试跑的第一条判断。',row?.error ? 'error-text' : 'muted'));
+    return;
+  }
+  const a = row.answer;
+  panel.append(create('h3',`S2 判断 · ${seconds(row.observed_at_s)}`));
+  const fields = create('div',null,'fields');
+  for (const [label,text,tone] of [['当前阶段',phases[a.phase]],['任务结果',outcomes[a.outcome],a.outcome],
+      ['需要干预',a.needs_intervention ? '需要' : '无需',a.needs_intervention ? 'failure' : ''],['建议',decisions[a.decision],a.decision]]) {
+    const field = create('div',null,'field');
+    field.append(create('small',label),create('strong',text,`verdict ${tone || ''}`)); fields.append(field);
+  }
+  panel.append(fields,create('p',a.progress,'stage'),create('p',a.reason,'muted info'));
+  panel.append(create('p',`进入队列后等了 ${seconds(row.queue_seconds,1)}，推理 ${seconds(row.request_seconds,1)}。`,'muted info'));
+  const proof = create('div',null,'evidence');
+  for (const item of a.evidence) {
+    const figure = create('figure'), anchor = create('a'), img = create('img');
+    anchor.href = item.path; anchor.target = '_blank'; anchor.rel = 'noopener';
+    img.src = item.path; img.alt = item.observation;
+    anchor.append(img); figure.append(anchor,create('figcaption',`${seconds(item.time_s)} · ${item.observation}`)); proof.append(figure);
+  }
+  panel.append(proof);
+}
+function render(state) {
+  current = state;
+  if (terminal.has(state.status)) startWhenReady = false;
+  get('status').textContent = statusText[state.status];
+  get('status').classList.toggle('error',state.status === 'error');
+  get('queued').textContent = state.waiting_count;
+  get('elapsed').textContent = seconds(state.elapsed_s,1);
+  get('lastLatency').textContent = seconds(state.timeline.at(-1)?.request_seconds,1);
+  const timing = get('warmupTiming');
+  timing.hidden = !state.warmup_requested;
+  timing.textContent = state.warmup_seconds != null ? `预热请求耗时 ${seconds(state.warmup_seconds,1)}（单独计时）。` :
+    state.status === 'warming' ? `纯文本预热已用时 ${seconds(state.warmup_elapsed_s,1)}。` : '';
+  get('pending').textContent = state.in_flight_s == null ?
+    (state.waiting_count ? '模型将按顺序处理已播放的窗口。' :
+      state.status === 'ready' && !playbackStarted ? '点击「开始监控」后，视频会复用这个会话。' : '') :
+    `正在判断视频 ${seconds(state.in_flight_s)} 时的状态。`;
+  error(state.error);
+  const row = selected == null ? state.timeline.at(-1) : state.timeline[selected];
+  const key = `${state.id}/${state.timeline.length}/${selected}`;
+  if (renderedKey !== key) {
+    renderedKey = key;
+    showResult(row);
+    const events = state.timeline.map((r,index) => {
+      const a = r.answer;
+      const button = create('button',null);
+      button.setAttribute('aria-current',r === row);
+      button.append(create('time',seconds(r.observed_at_s)), create('span',a ? phases[a.phase] : '错误'),
+                    create('span',a ? outcomes[a.outcome] : '请求失败',`verdict ${a?.outcome || 'failure'}`),
+                    create('p',a ? a.progress : r.error));
+      button.onclick = () => {
+        selected = selected === index ? null : index;
+        if (terminal.has(current.status)) player.currentTime = r.observed_at_s;
+        render(current);
+      };
+      return button;
+    });
+    get('events').replaceChildren(...(events.length ? events : [create('p','尚无本次试跑记录。','muted')]));
+  }
+  controls();
+}
+async function poll() {
+  if (!current || terminal.has(current.status)) return;
+  const id = current.id, time = player.currentTime, ended = player.ended;
+  try {
+    const sending = playbackStarted && current.status !== 'stopping' && (time > lastTime + 0.04 || (ended && !sentEnd));
+    const state = sending ? await request('/live/advance',{id,playhead_s:time,ended}) :
+      await request(`/live/state?id=${encodeURIComponent(id)}`);
+    if (current?.id === id) {
+      if (sending) { lastTime = time; sentEnd = ended; }
+      if (!terminal.has(current.status) && !(current.episode && !state.episode) &&
+          (current.status !== 'stopping' || state.status === 'stopping' || terminal.has(state.status))) {
+        render(state);
+        if (state.status === 'ready' && startWhenReady && !starting) await startPlayback();
+      }
+    }
+  } catch (problem) {
+    error(problem.message);
+  } finally {
+    if (current?.id === id && !terminal.has(current.status)) schedulePoll();
+  }
+}
+function schedulePoll() {
+  clearTimeout(timer);
+  timer = setTimeout(poll,650);
+}
+async function openRun(warmup) {
+  clearTimeout(timer);
+  player.currentTime = 0;
+  const model = get('model').value;
+  const state = await request('/live/start', warmup ? {model,warmup:true} :
+    {model,warmup:false,episode:get('episode').value});
+  selected = null; lastTime = 0; sentEnd = false; playbackStarted = !warmup;
+  return state;
+}
+async function prepare() {
+  starting = true; controls(); error();
+  try {
+    render(await openRun(true)); schedulePoll();
+  } catch (problem) { startWhenReady = false; error(problem.message); }
+  finally { starting = false; controls(); }
+}
+async function startPlayback() {
+  startWhenReady = false; starting = true; controls(); error();
+  try {
+    const state = current?.status === 'ready' ?
+      await request('/live/play',{id:current.id,episode:get('episode').value}) : await openRun(false);
+    playbackStarted = true;
+    render(state); schedulePoll();
+    await player.play();
+  } catch (problem) { error(problem.message); }
+  finally { starting = false; controls(); }
+}
+get('warmup').onclick = prepare;
+get('start').onclick = () => {
+  if (!current || terminal.has(current.status) || current.status === 'ready') return startPlayback();
+  startWhenReady = true;
+  controls();
+};
+get('pause').onclick = () => {
+  if (player.paused) player.play().catch(problem => error(problem.message));
+  else player.pause();
+};
+get('stop').onclick = async () => {
+  player.pause();
+  startWhenReady = false;
+  get('stop').disabled = true;
+  try { render(await request('/live/stop',{id:current.id})); }
+  catch (problem) { error(problem.message); controls(); }
+};
+function resetIdle() {
+  clearTimeout(timer);
+  current = null; playbackStarted = false; startWhenReady = false; renderedKey = '';
+  get('warmupTiming').hidden = true;
+  get('status').textContent = '可以开始'; get('status').classList.remove('error');
+  for (const [id,text] of [['queued','0'],['elapsed','—'],['lastLatency','—'],['pending','']]) get(id).textContent = text;
+  get('events').replaceChildren(create('p','尚无本次试跑记录。','muted'));
+  get('judgment').replaceChildren(create('p','开始监控后，新判断会显示在这里。','muted'));
+  error(); controls();
+}
+get('episode').onchange = () => {
+  loadVideo();
+  if (!current || terminal.has(current.status)) resetIdle();
+};
+for (const event of ['play','pause','ended']) player.addEventListener(event,controls);
+player.addEventListener('timeupdate',showClock);
+Promise.all([request('/live/options'), request('/live/active')]).then(([data, active]) => {
+  options = data;
+  get('task').textContent = data.task;
+  get('sampling').textContent = `点击「预热模型」可提前准备会话。原速播放，每 ${data.window_seconds} 秒提交一组已播画面。`;
+  for (const item of data.episodes) get('episode').append(new Option(`Episode ${item.id.split('_').at(-1)}`,item.id));
+  for (const model of data.models) get('model').append(new Option(model,model));
+  if (active?.model) get('model').value = active.model;
+  if (active?.episode) get('episode').value = active.episode;
+  loadVideo();
+  if (!active) return resetIdle();
+  if (active.episode) {
+    playbackStarted = true;
+    player.currentTime = lastTime = active.playhead_s;
+  }
+  render(active); schedulePoll();
+}).catch(problem => { get('status').textContent = '无法准备试跑'; error(problem.message); });
+</script>
+</body>
+</html>
