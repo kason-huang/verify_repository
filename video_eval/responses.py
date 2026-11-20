@@ -41,12 +41,12 @@ def validate(answer, known_ids):
         raise ValueError('Model intervention judgment and decision disagree')
 
 
-def parse_answer(raw):
+def parse_answer(raw, *, object_pairs_hook=None):
     if not isinstance(raw, str):
         raise ValueError('Model returned no text')
     text = raw.strip()
     fenced = re.fullmatch(r'```(?:json)?\s*(.*?)\s*```', text, flags=re.IGNORECASE | re.DOTALL)
-    return json.loads(fenced.group(1) if fenced else text)
+    return json.loads(fenced.group(1) if fenced else text, object_pairs_hook=object_pairs_hook)
 
 
 def resolve_frame(reference, frames):

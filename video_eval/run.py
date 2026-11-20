@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
 
+from prompts import window_prompt
 from reporting import write_report
 from responses import OUTPUT_SCHEMA, parse_answer, validate
 from motvlm import MODEL_ID as MOTVLM_MODEL, MoTVLM, configured_url
@@ -242,18 +243,14 @@ async def observe_window(backend, thread, episode, window, known_ids):
     independent = isinstance(backend, MoTVLM) and backend.independent_frames
     frame_ids = window['frame_ids'][-backend.max_images:] if independent else window['frame_ids']
     known_ids.update(frame_ids)
-    frames = ', '.join(f'{id_}={episode["frames"][id_]["time_s"]:.3f}s' for id_ in frame_ids)
-    cutoff = window['observed_at_s']
-    text = f'Task instruction: {TASK}\nCheck at {cutoff:.3f}s (episode time).\n'
-    order = 'attachment order' if independent else 'row-major order'
-    text += f'Frames in {order}: {frames}.\n'
-    text += 'This is the final check; the recording has ended.' if window['end_of_episode'] else 'The recording is still ongoing.'
+    frames = [dict(frame_id=frame_id, **episode['frames'][frame_id]) for frame_id in frame_ids]
+    text = window_prompt(TASK, window, frames, independent=independent)
     start = time.monotonic()
     row = {**window, 'thread_id': thread, 'request_started_at': datetime.now(timezone.utc).isoformat()}
     if independent:
         row['frame_ids'] = frame_ids
-        row['input_images'] = [dict(frame_id=frame_id, **episode['frames'][frame_id]) for frame_id in frame_ids]
-        image_input = [image['path'] for image in row['input_images']]
+        row['input_images'] = frames
+        image_input = [frame['path'] for frame in frames]
     else:
         image_input = window['sheet']
     try:
