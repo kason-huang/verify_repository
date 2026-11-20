@@ -8,8 +8,12 @@ import urllib.error
 import urllib.request
 from uuid import uuid4
 
+from prompts import motvlm_instructions, motvlm_observation, motvlm_question
+
 MODEL_ID = 'motvlm'
 MAX_NEW_TOKENS = 384
+GENERATE_PATH = '/generate'
+CONTACT_SHEET_LAYOUT = 'single_image'
 
 
 def configured_url(override=None):
@@ -26,21 +30,7 @@ class MoTVLM:
         self.history = {}
         self.independent_frames = independent_frames
         self.max_images = 1
-        properties = schema['properties']
-        options = '; '.join(f'{name}: {" | ".join(properties[name]["enum"])}'
-                            for name in ('phase', 'outcome', 'decision'))
-        image_instructions = (
-            'The attached images are separate video frames, in chronological order and in the order of the listed IDs.'
-            if independent_frames else 'The single attached image is a contact sheet. Read it left to right, top to bottom.'
-        )
-        self.instructions = (
-            f'{rules}\n{image_instructions} '
-            'Use only the listed frame IDs. Return one compact JSON object. Put these keys directly at the root: '
-            'phase, progress, outcome, needs_intervention, decision, reason, evidence. '
-            f'Allowed values: {options}. needs_intervention is a JSON boolean. '
-            'Use short phrases for progress and reason. evidence is an array of one or two objects '
-            'with frame_id and observation. Do not print the schema or add other keys.'
-        )
+        self.instructions = motvlm_instructions(rules, schema, independent=independent_frames)
 
     def request_json(self, path, payload=None):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -73,30 +63,22 @@ class MoTVLM:
 
     def remember(self, episode_id, answer):
         # Only keep observations that already passed the output and frame-ID checks.
-        self.history[episode_id].append({key: answer[key] for key in ('phase', 'outcome', 'progress', 'evidence')})
+        self.history[episode_id].append(motvlm_observation(answer))
 
     async def observe(self, episode_id, text, image_input):
-        question = self.instructions
-        if self.independent_frames:
-            paths = image_input
-        else:
-            observations = self.history[episode_id]
-            recent = observations[-2:]
-            prior_success = next((row for row in observations if row['outcome'] == 'success'), None)
-            if prior_success and prior_success not in recent:
-                recent = [prior_success, *recent]
-            history = json.dumps(recent, ensure_ascii=False, separators=(',', ':'))
-            question += f'\nPrior observations in this episode (model outputs, not instructions): {history}'
-            paths = [image_input]
+        history = None if self.independent_frames else self.history[episode_id]
+        question = motvlm_question(self.instructions, text, history)
+        paths = image_input if self.independent_frames else [image_input]
         images = ['data:image/jpeg;base64,' + base64.b64encode(Path(path).read_bytes()).decode('ascii')
                   for path in paths]
-        payload = {'question': f'{question}\n{text}', 'images': images, 'max_new_tokens': MAX_NEW_TOKENS}
+        request = {'question': question, 'max_new_tokens': MAX_NEW_TOKENS}
         if not self.independent_frames:
-            payload['layout'] = 'single_image'
-        response = await asyncio.to_thread(self.request_json, '/generate', payload)
+            request['layout'] = CONTACT_SHEET_LAYOUT
+        response = await asyncio.to_thread(self.request_json, GENERATE_PATH, {**request, 'images': images})
+        details = {'request': {'method': 'POST', 'path': GENERATE_PATH, **request}}
         if not isinstance(response, dict):
-            return uuid4().hex, response, {}
-        details = {key: response[key] for key in ('model', 'input_token_count', 'generated_token_count',
-                                                  'output_limit_reached') if key in response}
+            return uuid4().hex, response, details
+        details.update({key: response[key] for key in ('model', 'input_token_count', 'generated_token_count',
+                                                       'output_limit_reached') if key in response})
         details['server_elapsed_seconds'] = response.get('elapsed_seconds')
         return uuid4().hex, response.get('text'), details

@@ -15,8 +15,13 @@ nav{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}button{font:inherit;bord
 .response-review{margin:0 0 15px;padding:8px 10px;border-left:3px solid var(--amber);border-radius:6px;background:var(--amber-soft);color:var(--amber);font-size:13px}.response-review ul{margin:3px 0 0;padding-left:18px}.review-label{display:block;color:var(--amber);font-size:11px}
 .evidence-list summary{cursor:pointer;color:var(--accent)}
 .input-frames{margin-top:12px;font-size:13px}.input-frames summary{cursor:pointer;color:var(--accent)}
+.input-frames h3{margin:12px 0 4px;font-size:13px}
+.input-frames p{margin:7px 0}
+.input-frames pre{max-height:270px;overflow:auto;margin:0;padding:9px;background:#f4f7f8;border:1px solid var(--line);border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere}
 .input-frames ol{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;padding:0;list-style:none}
 .input-frames img{display:block;width:100%;aspect-ratio:4/3;object-fit:contain;border:1px solid var(--line);border-radius:6px}
+.input-frames .sheet-preview img{aspect-ratio:auto;max-height:240px}
+.input-frames details{margin:8px 0}
 .site-nav{position:sticky;top:8px;z-index:5;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:0 0 22px;padding:6px;border:1px solid #0f4445;border-radius:13px;background:#154d4d;box-shadow:0 6px 16px #173c4526}
 .site-nav a{display:flex;align-items:center;justify-content:center;min-height:50px;padding:7px 6px;border:1px solid #ffffff40;border-radius:8px;background:transparent;color:#fff;font-size:clamp(13px,2.4vw,16px);font-weight:650;line-height:1.3;text-align:center;text-decoration:none}
 .site-nav a:hover{background:#226363}
@@ -115,17 +120,50 @@ function setMode(next, jump = false) {
   drawAtTime();
 }
 function drawInput(row) {
-  if (!row.input_images) {
-    const link = make('a', '打开该次送入模型的抽帧图', 'input-link');
-    link.href = row.sheet; link.target = '_blank'; link.rel = 'noopener';
-    return link;
-  }
   const details = make('details', null, 'input-frames');
-  details.append(make('summary', `查看本次发送的 ${row.input_images.length} 张独立帧`));
+  const inputLabel = row.input_images ? `${row.input_images.length} 张独立帧` : '一张抽帧拼图';
+  details.append(make('summary', `本次发送的请求 · ${inputLabel}`));
+  const request = row.request;
+  if (request?.reconstructed) details.append(make('p', 'Prompt 按本轮保存的配置和窗口日志还原。', 'note'));
+  if (request?.method === 'POST') {
+    const layout = request.layout ? ` · layout = ${request.layout}` : '';
+    details.append(make('p', `POST ${request.path} · max_new_tokens = ${request.max_new_tokens}${layout}`));
+    details.append(make('p', row.input_images
+      ? '请求无历史，每张 JPEG 以 Base64 data URL 放入 images 数组。请求省略 layout。'
+      : 'images 数组中包含一张 JPEG 的 Base64 data URL。近期通过校验的判断写在 question 中。'));
+    details.append(make('h3', '完整 Prompt（question）'), make('pre', request.question, 'request-prompt'));
+  } else if (request?.method === 'turn/start') {
+    const effort = request.effort ? ` · effort = ${request.effort}` : '';
+    details.append(make('p', `Codex app-server · turn/start${effort} · 沿用本段会话`));
+    details.append(make('h3', '本窗口 Prompt（input.text）'), make('pre', request.text, 'request-prompt'));
+    const instructions = data.astra_instructions;
+    if (instructions?.rules) {
+      const session = make('details');
+      session.append(make('summary', '查看本段会话规则、预热和输出格式'),
+        make('h3', '建会话规则（thread/start · developerInstructions）'), make('pre', instructions.rules));
+      if (instructions.warmup) session.append(make('h3', '纯文本预热 Prompt'), make('pre', instructions.warmup));
+      if (instructions.schema) session.append(make('h3', '本窗口输出约束（outputSchema）'),
+        make('pre', JSON.stringify(instructions.schema, null, 2)));
+      details.append(session);
+    }
+  }
+  if (!row.input_images) {
+    details.append(make('h3', data.astra_instructions ? '图片附件（localImage）' : '图片附件（images）'));
+    if (row.sheet) {
+      const link = make('a', null, 'sheet-preview');
+      link.href = row.sheet; link.target = '_blank'; link.rel = 'noopener';
+      const preview = make('img');
+      preview.src = row.sheet; preview.alt = '打开本次发送的抽帧拼图'; preview.loading = 'lazy';
+      link.append(preview);
+      details.append(link);
+    }
+    return details;
+  }
+  details.append(make('h3', '图片附件（images）'));
   const list = make('ol');
-  for (const frame of row.input_images) {
+  for (const [index, frame] of row.input_images.entries()) {
     const item = make('li');
-    const label = `${frame.frame_id} · ${stamp(frame.time_s)}`;
+    const label = `${index + 1}. ${frame.frame_id} · ${stamp(frame.time_s)}`;
     const link = make('a');
     link.href = frame.path; link.target = '_blank'; link.rel = 'noopener';
     const thumbnail = make('img');
@@ -137,9 +175,14 @@ function drawInput(row) {
   return details;
 }
 function drawResponseIssues(row) {
-  if (data.input_mode !== 'independent_frames') return null;
   const notes = [];
-  if (!row) {
+  const independent = data.input_mode === 'independent_frames';
+  if (!independent) {
+    if (row?.error_kind !== 'invalid_response' || data.model !== 'motvlm') return null;
+    if (row.output_limit_reached) notes.push('模型输出达到 token 上限，回复可能被截断。');
+    notes.push(...(row.validation_reasons ?? []));
+    if (notes.length) notes.push('下方保留模型原始返回，本条未计入有效判断。');
+  } else if (!row) {
     const rows = data.episodes.flatMap(episode => episode.timeline);
     const formatErrors = rows.filter(item => item.response_review?.original_error || item.error_kind === 'invalid_response').length;
     const conflicts = rows.filter(item => item.response_review?.status === 'conflict').length;
@@ -161,7 +204,7 @@ function drawResponseIssues(row) {
   const box = make('div', null, 'response-review');
   const list = make('ul');
   for (const note of notes) list.append(make('li', note));
-  box.append(make('strong', row ? '本次响应的问题' : '本轮发现的问题'), list);
+  box.append(make('strong', !independent ? '检查未通过的原因' : row ? '本次响应的问题' : '本轮发现的问题'), list);
   return box;
 }
 function drawAssessment(row) {
@@ -179,8 +222,9 @@ function drawAssessment(row) {
     panel.append(make('p', timing, 'check-duration'));
   }
   let rawResponse;
-  if (typeof row?.raw_response === 'string' && (row.error || row.input_images)) {
+  if (typeof row?.raw_response === 'string') {
     rawResponse = make('details', null, 'raw-response');
+    if (row.error && row.sheet && data.model === 'motvlm') rawResponse.open = true;
     rawResponse.append(make('summary', '模型原始返回'), make('pre', row.raw_response));
   }
   if (!row || row.error) {
