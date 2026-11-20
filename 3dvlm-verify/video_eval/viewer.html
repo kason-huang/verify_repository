@@ -12,6 +12,11 @@ nav{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}button{font:inherit;bord
 @media(max-width:800px){main{padding:22px 12px}.grid{grid-template-columns:1fr}.event{grid-template-columns:65px 78px 86px minmax(0,1fr);gap:5px;font-size:13px}.event .pill{font-size:11px;padding:3px 6px}}@media(max-width:500px){.event .event-detail{grid-column:1/-1}header{display:block}#runState{margin-top:9px}}
 .event .duration{display:block;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}.check-duration{font-size:13px;margin:-6px 0 10px}
 .raw-response{font-size:13px;margin-top:10px}.raw-response pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.response-review{margin:0 0 15px;padding:8px 10px;border-left:3px solid var(--amber);border-radius:6px;background:var(--amber-soft);color:var(--amber);font-size:13px}.response-review ul{margin:3px 0 0;padding-left:18px}.review-label{display:block;color:var(--amber);font-size:11px}
+.evidence-list summary{cursor:pointer;color:var(--accent)}
+.input-frames{margin-top:12px;font-size:13px}.input-frames summary{cursor:pointer;color:var(--accent)}
+.input-frames ol{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;padding:0;list-style:none}
+.input-frames img{display:block;width:100%;aspect-ratio:4/3;object-fit:contain;border:1px solid var(--line);border-radius:6px}
 .site-nav{position:sticky;top:8px;z-index:5;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:0 0 22px;padding:6px;border:1px solid #0f4445;border-radius:13px;background:#154d4d;box-shadow:0 6px 16px #173c4526}
 .site-nav a{display:flex;align-items:center;justify-content:center;min-height:50px;padding:7px 6px;border:1px solid #ffffff40;border-radius:8px;background:transparent;color:#fff;font-size:clamp(13px,2.4vw,16px);font-weight:650;line-height:1.3;text-align:center;text-decoration:none}
 .site-nav a:hover{background:#226363}
@@ -70,6 +75,10 @@ const outcomes = {in_progress:'进行中', success:'成功', failure:'失败', u
 const finalOutcome = value => value === 'in_progress' ? '结束未判定' : outcomes[value];
 const phases = {waiting:'等待', approaching:'接近盒子', grasping:'尝试抓取', lifting:'提起', retrying:'重新尝试', after_pick:'已完成抓取', unclear:'阶段不明'};
 const decisions = {continue:'继续', retry:'重试', intervene:'干预', finish:'结束', observe:'继续观察'};
+const reviewLabels = {normalized:'格式已转换', partial:'部分返回', conflict:'判断冲突'};
+const responseFields = {phase:'当前阶段', progress:'进度', outcome:'任务结果',
+  needs_intervention:'是否需要干预', decision:'建议动作', reason:'理由', evidence:'证据帧'};
+const conflictLabels = {outcome_decision:'任务结果与结束建议不一致', intervention_decision:'干预判断与建议动作不一致'};
 const initial = get('initialData').textContent.trim();
 const live = initial === '<!-- REPORT_DATA -->';
 if (live) {
@@ -105,10 +114,62 @@ function setMode(next, jump = false) {
   if (jump && row) seek(row.observed_at_s);
   drawAtTime();
 }
+function drawInput(row) {
+  if (!row.input_images) {
+    const link = make('a', '打开该次送入模型的抽帧图', 'input-link');
+    link.href = row.sheet; link.target = '_blank'; link.rel = 'noopener';
+    return link;
+  }
+  const details = make('details', null, 'input-frames');
+  details.append(make('summary', `查看本次发送的 ${row.input_images.length} 张独立帧`));
+  const list = make('ol');
+  for (const frame of row.input_images) {
+    const item = make('li');
+    const label = `${frame.frame_id} · ${stamp(frame.time_s)}`;
+    const link = make('a');
+    link.href = frame.path; link.target = '_blank'; link.rel = 'noopener';
+    const thumbnail = make('img');
+    thumbnail.src = frame.path; thumbnail.alt = label; thumbnail.loading = 'lazy';
+    link.append(thumbnail, make('span', label));
+    item.append(link); list.append(item);
+  }
+  details.append(list);
+  return details;
+}
+function drawResponseIssues(row) {
+  if (data.input_mode !== 'independent_frames') return null;
+  const notes = [];
+  if (!row) {
+    const rows = data.episodes.flatMap(episode => episode.timeline);
+    const formatErrors = rows.filter(item => item.response_review?.original_error || item.error_kind === 'invalid_response').length;
+    const conflicts = rows.filter(item => item.response_review?.status === 'conflict').length;
+    if (formatErrors) notes.push(`${formatErrors} 条原始响应未通过格式校验，例如必填字段缺失或证据帧引用格式不合规。`);
+    if (conflicts) notes.push(`${conflicts} 条响应的判断字段相互冲突。`);
+  } else {
+    const review = row.response_review;
+    const originalError = review?.original_error ?? row.error;
+    if (originalError === 'Model did not cite one or two valid observed frames') {
+      notes.push('原始证据帧引用不符合要求，帧编号或引用数量有误。');
+    } else if (originalError && (review || row.error_kind === 'invalid_response')) {
+      notes.push('原始输出结构不符合预期。');
+    }
+    if (review?.missing.length) notes.push(`缺少可用字段（${review.missing.map(key => responseFields[key]).join('、')}）。`);
+    if (review?.conflicts.length) notes.push(...review.conflicts.map(key => `${conflictLabels[key]}。`));
+    if (review?.status === 'normalized') notes.push('已根据本次发送的图片统一证据引用。');
+  }
+  if (!notes.length) return null;
+  const box = make('div', null, 'response-review');
+  const list = make('ul');
+  for (const note of notes) list.append(make('li', note));
+  box.append(make('strong', row ? '本次响应的问题' : '本轮发现的问题'), list);
+  return box;
+}
 function drawAssessment(row) {
   const panel = get('assessment');
   panel.replaceChildren();
   get('checkHeading').textContent = row ? `S2 判断 · ${stamp(row.observed_at_s)}` : 'S2 判断';
+  const issues = drawResponseIssues(row);
+  if (issues) panel.append(issues);
   if (row) {
     let timing = `${modelLabel()} 请求耗时 ${requestDuration(row)}`;
     if (Number.isFinite(row.turn_ack_seconds)) timing += ` · 本地确认 ${duration(row.turn_ack_seconds)} · 首个文本 ${duration(row.first_text_seconds)}`;
@@ -117,18 +178,15 @@ function drawAssessment(row) {
     if (row.warmup) timing += ` · 纯文本预热 ${duration(row.warmup.turn_completed_seconds)} · 首条视频请求前共等待 ${duration(row.before_first_video_seconds)}`;
     panel.append(make('p', timing, 'check-duration'));
   }
+  let rawResponse;
+  if (typeof row?.raw_response === 'string' && (row.error || row.input_images)) {
+    rawResponse = make('details', null, 'raw-response');
+    rawResponse.append(make('summary', '模型原始返回'), make('pre', row.raw_response));
+  }
   if (!row || row.error) {
     panel.append(make('p', row?.error ?? '等待第一个视频窗口的判断。', row?.error ? 'error' : ''));
-    if (row) {
-      const input = make('a', '打开该次送入模型的抽帧图', 'input-link');
-      input.href = row.sheet; input.target = '_blank'; input.rel = 'noopener';
-      panel.append(input);
-      if (typeof row.raw_response === 'string') {
-        const details = make('details', null, 'raw-response');
-        details.append(make('summary', '模型原始返回'), make('pre', row.raw_response));
-        panel.append(details);
-      }
-    }
+    if (row) panel.append(drawInput(row));
+    if (rawResponse) panel.append(rawResponse);
     return;
   }
   const value = row.answer;
@@ -140,11 +198,14 @@ function drawAssessment(row) {
     box.append(make('dt', label), result);
     grid.append(box);
   }
-  field('当前阶段', phases[value.phase]);
-  field('任务结果', pill(outcomes[value.outcome], value.outcome));
-  field('需要干预', pill(value.needs_intervention ? '需要' : '无需', value.needs_intervention ? 'alert' : ''));
-  field('建议动作', pill(decisions[value.decision], value.decision === 'retry' ? 'retry' : ''));
-  panel.append(grid, make('div', value.progress), make('p', value.reason, 'why'));
+  field('当前阶段', phases[value.phase] ?? '未提供');
+  field('任务结果', pill(outcomes[value.outcome] ?? '未提供', value.outcome));
+  const intervention = value.needs_intervention == null ? '未提供' : value.needs_intervention ? '需要' : '无需';
+  field('需要干预', pill(intervention, value.needs_intervention ? 'alert' : ''));
+  field('建议动作', pill(decisions[value.decision] ?? '未提供', value.decision === 'retry' ? 'retry' : ''));
+  panel.append(grid);
+  if (value.progress) panel.append(make('div', value.progress));
+  if (value.reason) panel.append(make('p', value.reason, 'why'));
   const proof = make('div', null, 'proof');
   for (const item of value.evidence) {
     const figure = make('figure');
@@ -158,9 +219,15 @@ function drawAssessment(row) {
     cap.append(button, item.observation);
     figure.append(anchor, cap); proof.append(figure);
   }
-  const input = make('a', '打开该次送入模型的抽帧图', 'input-link');
-  input.href = row.sheet; input.target = '_blank'; input.rel = 'noopener';
-  panel.append(proof, input);
+  if (value.evidence.length > 2) {
+    const evidenceList = make('details', null, 'evidence-list');
+    evidenceList.append(make('summary', `查看模型引用的 ${value.evidence.length} 张证据帧`), proof);
+    panel.append(evidenceList);
+  } else if (value.evidence.length) {
+    panel.append(proof);
+  }
+  panel.append(drawInput(row));
+  if (rawResponse) panel.append(rawResponse);
 }
 function drawAtTime() {
   const episode = data.episodes[selected];
@@ -181,11 +248,25 @@ function render() {
   const total = data.episodes.reduce((sum, item) => sum + item.checks_expected, 0);
   const attempted = data.episodes.reduce((sum, item) => sum + item.timeline.length, 0);
   const errors = data.episodes.reduce((sum, item) => sum + item.errors.length, 0);
-  if (data.task) get('instruction').textContent = `${data.task} · ${modelLabel()}`;
+  const independentFrames = data.input_mode === 'independent_frames';
+  const labelSuffix = independentFrames ? ' · 独立帧 · 无历史' : '';
+  if (data.task) get('instruction').textContent = `${data.task} · ${modelLabel()}${labelSuffix}`;
   const measured = data.episodes.filter(item => item.checks_completed > 0);
   get('warmupNote').hidden = !measured.length || !measured.every(item => item.timeline[0]?.warmup?.response?.trim() === 'READY');
   const label = !total ? '等待评测准备' : attempted === total ? '评测完成' : live ? '评测运行中' : '评测未完成';
-  runText = !total ? label : errors ? `${label} · ${attempted}/${total} 次 · 有效 ${done} 次` : `${label} · ${done}/${total} 次检查`;
+  if (independentFrames) {
+    const rows = data.episodes.flatMap(episode => episode.timeline);
+    const stats = [
+      `${label} · ${attempted}/${total} 次`,
+      `完整且无冲突 ${done} 次`,
+      `部分返回 ${rows.filter(row => row.response_review?.status === 'partial').length} 次`,
+      `判断冲突 ${rows.filter(row => row.response_review?.status === 'conflict').length} 次`,
+    ];
+    if (errors) stats.push(`无法解析 ${errors} 次`);
+    runText = stats.join(' · ');
+  } else {
+    runText = !total ? label : errors ? `${label} · ${attempted}/${total} 次 · 有效 ${done} 次` : `${label} · ${done}/${total} 次检查`;
+  }
   get('runState').textContent = runText;
   get('episodes').replaceChildren(...data.episodes.map((item, index) => {
     const button = make('button', `Episode ${item.episode.split('_').at(-1)}`);
@@ -204,14 +285,20 @@ function render() {
     const answer = row.answer;
     const timing = make('span');
     timing.append(make('time', stamp(row.observed_at_s)), make('small', `耗时 ${requestDuration(row)}`, 'duration'));
-    button.append(timing, make('span', answer ? phases[answer.phase] : '检查失败'),
-      pill(answer ? outcomes[answer.outcome] : '错误', answer?.outcome ?? 'failure'),
-      make('span', answer ? `${answer.needs_intervention ? '需干预 · ' : ''}${answer.progress}` : row.error, 'event-detail'));
+    const phase = make('span', answer ? phases[answer.phase] ?? '未提供' : '检查失败');
+    if (row.response_review) phase.append(make('small', reviewLabels[row.response_review.status], 'review-label'));
+    button.append(timing, phase, pill(answer ? outcomes[answer.outcome] ?? '未提供' : '错误', answer ? answer.outcome : 'failure'),
+      make('span', answer ? `${answer.needs_intervention ? '需干预 · ' : ''}${answer.progress ?? ''}` : row.error, 'event-detail'));
     button.onclick = () => { setMode('playback'); seek(row.observed_at_s); };
     return button;
   });
   get('timeline').replaceChildren(...(rows.length ? rows : [make('p', '还没有检查记录。')]));
-  const memory = data.model === 'motvlm' ? 'MoTVLM 接口不保留会话，每次请求附带本段此前通过格式与证据编号检查的近期判断。' : '';
+  let memory = '';
+  if (independentFrames) {
+    memory = '每次请求按时间顺序发送当前窗口的独立图片。证据中的数字帧号和时间戳只匹配本次发送的帧。部分返回与判断冲突均可查看，完整判断统计只计入字段齐全且无冲突的响应。';
+  } else if (data.model === 'motvlm') {
+    memory = 'MoTVLM 接口不保留会话，每次请求附带本段此前通过格式与证据编号检查的近期判断。';
+  }
   get('note').textContent = `每 ${data.window_seconds} 秒提交一组按时间排序的抽帧。视频时间从本 episode 起点计，耗时为请求从发出到返回的实际用时。${memory}页面显示的是模型判断，未与人工真值比较。`;
   currentRow = null;
   setMode(mode);
