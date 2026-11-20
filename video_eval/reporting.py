@@ -5,6 +5,8 @@ from os.path import relpath
 from pathlib import Path
 from urllib.parse import quote
 
+from responses import interpret_independent_response
+
 VIEWER = Path(__file__).with_name('viewer.html')
 
 
@@ -16,12 +18,36 @@ def read_rows(path):
             if line.endswith('\n')]
 
 
+def review_independent_rows(rows):
+    for row in rows:
+        if not row.get('input_images') or row.get('output_limit_reached') or row.get('error_kind') == 'request_error':
+            continue
+        try:
+            answer, missing, conflicts = interpret_independent_response(row.get('raw_response'), row['input_images'])
+        except ValueError:
+            continue
+        if conflicts or missing or answer != row.get('answer'):
+            status = 'conflict' if conflicts else 'partial' if missing else 'normalized'
+            row['response_review'] = {
+                'status': status, 'missing': missing, 'conflicts': conflicts,
+                'original_error': row.get('error'),
+            }
+        row['answer'] = answer
+        row.pop('error', None)
+        row.pop('error_kind', None)
+
+
 def report_data(output, config, live=False, media_prefix='/media/'):
     episodes = []
+    independent = config.get('input_mode') == 'independent_frames'
     for item in config['episodes']:
         name = item['episode']
         rows = read_rows(output / name / 'timeline.jsonl')
-        valid = [row for row in rows if 'answer' in row]
+        strict_count = sum('answer' in row for row in rows)
+        if independent:
+            review_independent_rows(rows)
+        valid = [row for row in rows if 'answer' in row
+                 and row.get('response_review', {}).get('status') not in ('partial', 'conflict')]
         summary = {
             'episode': name, 'checks_completed': len(valid), 'checks_expected': len(item['windows']),
             'final_outcome': valid[-1]['answer']['outcome'] if valid and valid[-1]['end_of_episode'] else None,
@@ -31,14 +57,19 @@ def report_data(output, config, live=False, media_prefix='/media/'):
                                                  if row['answer']['needs_intervention']), None),
             'errors': [row['error'] for row in rows if 'error' in row],
         }
+        if independent:
+            summary['strict_checks_completed'] = strict_count
         video = '/video/' + quote(Path(item['video']).name) if live else quote(relpath(item['video'], output))
         for row in rows:
-            row['sheet'] = asset_url(output, row['sheet'], live, media_prefix)
+            if 'sheet' in row:
+                row['sheet'] = asset_url(output, row['sheet'], live, media_prefix)
+            for image in row.get('input_images', []):
+                image['path'] = asset_url(output, image['path'], live, media_prefix)
             for evidence in row.get('answer', {}).get('evidence', []):
                 evidence['path'] = asset_url(output, evidence['path'], live, media_prefix)
         episodes.append({**summary, 'video': video, 'duration_s': item['duration_s'], 'timeline': rows})
     return {'task': config['task'], 'model': config['model'], 'window_seconds': config['window_seconds'],
-            'episodes': episodes}
+            'episodes': episodes, 'input_mode': config.get('input_mode', 'contact_sheet')}
 
 
 def asset_url(output, path, live, media_prefix='/media/'):

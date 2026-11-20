@@ -5,7 +5,7 @@ import argparse
 import asyncio
 import hashlib
 import json
-import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -15,6 +15,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from reporting import write_report
+from responses import OUTPUT_SCHEMA, parse_answer, validate
 from motvlm import MODEL_ID as MOTVLM_MODEL, MoTVLM, configured_url
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,10 +25,6 @@ EFFORT = 'low'
 WINDOW_SECONDS = 3
 SAMPLE_EVERY_FRAMES = 8
 WARMUP_PROMPT = 'Connection check only. No video is provided. Reply with READY only and do not count this as a task observation.'
-PHASES = ['waiting', 'approaching', 'grasping', 'lifting', 'retrying', 'after_pick', 'unclear']
-OUTCOMES = ['in_progress', 'success', 'failure', 'uncertain']
-ACTIONS = ['continue', 'retry', 'intervene', 'finish', 'observe']
-
 RULES = '''Evaluate the task instruction exactly as written. This is a causal replay of one
 robot episode. Use the current chronological contact sheet and the observations from
 this conversation only. Do not use tools. Judge phases from visible changes over time.
@@ -50,20 +47,13 @@ changed since the previous check. `reason` explains the verdict and recommendati
 Use Chinese for progress, reason, and evidence observations. IDs must be exact.'''
 
 
-def object_schema(properties):
-    return dict(type='object', properties=properties, required=list(properties), additionalProperties=False)
-
-
-STRING = {'type': 'string'}
-OUTPUT_SCHEMA = object_schema({
-    'phase': {'type': 'string', 'enum': PHASES},
-    'progress': STRING,
-    'outcome': {'type': 'string', 'enum': OUTCOMES},
-    'needs_intervention': {'type': 'boolean'},
-    'decision': {'type': 'string', 'enum': ACTIONS},
-    'reason': STRING,
-    'evidence': {'type': 'array', 'items': object_schema({'frame_id': STRING, 'observation': STRING})},
-})
+INDEPENDENT_FRAME_RULES = (
+    RULES.replace('the current chronological contact sheet and the observations from\nthis conversation only',
+                  'only the chronologically ordered images in this request')
+    .replace(' Once visibly confirmed, retain success unless later\nevidence shows the original observation was mistaken.', '')
+    .replace('what\nchanged since the previous check', 'what changed within the current window')
+    .replace('frame IDs previously supplied', 'frame IDs listed in this request')
+)
 
 
 def prepare(video, directory, ffmpeg, ffprobe):
@@ -121,6 +111,29 @@ def prepare(video, directory, ffmpeg, ffprobe):
                         'end_of_episode': index == len(groups) - 1})
     return {'episode': video.stem, 'video': str(video), 'duration_s': float(Fraction(count, 30)),
             'sha256': hashlib.sha256(video.read_bytes()).hexdigest(), 'frames': frames, 'windows': windows}
+
+
+def reuse_frames(config_path, videos, output):
+    source = json.loads(config_path.read_text(encoding='utf-8'))
+    if source['window_seconds'] != WINDOW_SECONDS or source['sample_every_frames'] != SAMPLE_EVERY_FRAMES:
+        raise ValueError('Saved frame index does not match the current sampling settings')
+    episodes_by_id = {episode['episode']: episode for episode in source['episodes']}
+    episodes = [episodes_by_id[video.stem] for video in videos]
+    for episode, video in zip(episodes, videos):
+        if hashlib.sha256(video.read_bytes()).hexdigest() != episode['sha256']:
+            raise ValueError(f'{video.name}: does not match the saved frame index')
+        episode['video'] = str(video)
+        destination = output / video.stem / 'frames'
+        destination.mkdir(parents=True)
+        for frame_id, frame in episode['frames'].items():
+            filename = f'{frame_id}.jpg'
+            original = config_path.parent / video.stem / 'frames' / filename
+            path = destination / filename
+            shutil.copyfile(original, path)
+            frame['path'] = str(path)
+        for window in episode['windows']:
+            window.pop('sheet', None)
+    return episodes
 
 
 class Astra:
@@ -221,46 +234,30 @@ class Astra:
                     unexpected.append(item['type'])
 
 
-def validate(answer, known_ids):
-    if not isinstance(answer, dict) or set(answer) != set(OUTPUT_SCHEMA['required']):
-        raise ValueError('Model response does not match the required output fields')
-    if answer['phase'] not in PHASES or answer['outcome'] not in OUTCOMES or answer['decision'] not in ACTIONS:
-        raise ValueError('Unknown model decision, outcome or phase')
-    if type(answer['needs_intervention']) is not bool:
-        raise ValueError('needs_intervention must be boolean')
-    evidence = answer['evidence']
-    if not isinstance(evidence, list) or not 1 <= len(evidence) <= 2 or any(
-        not isinstance(item, dict) or not isinstance(item.get('frame_id'), str) or item['frame_id'] not in known_ids
-        or not isinstance(item.get('observation'), str) or not item['observation'].strip() for item in evidence
-    ):
-        raise ValueError('Model did not cite one or two valid observed frames')
-    if answer['needs_intervention'] != (answer['decision'] == 'intervene'):
-        raise ValueError('Model intervention judgment and decision disagree')
-
-
-def parse_answer(raw):
-    if not isinstance(raw, str):
-        raise ValueError('Model returned no text')
-    text = raw.strip()
-    fenced = re.fullmatch(r'```(?:json)?\s*(.*?)\s*```', text, flags=re.IGNORECASE | re.DOTALL)
-    return json.loads(fenced.group(1) if fenced else text)
-
-
 def should_stop(backend, row):
     return 'error' in row and not (isinstance(backend, MoTVLM) and row.get('error_kind') == 'invalid_response')
 
 
 async def observe_window(backend, thread, episode, window, known_ids):
-    known_ids.update(window['frame_ids'])
-    frames = ', '.join(f'{id_}={episode["frames"][id_]["time_s"]:.3f}s' for id_ in window['frame_ids'])
+    independent = isinstance(backend, MoTVLM) and backend.independent_frames
+    frame_ids = window['frame_ids'][-backend.max_images:] if independent else window['frame_ids']
+    known_ids.update(frame_ids)
+    frames = ', '.join(f'{id_}={episode["frames"][id_]["time_s"]:.3f}s' for id_ in frame_ids)
     cutoff = window['observed_at_s']
     text = f'Task instruction: {TASK}\nCheck at {cutoff:.3f}s (episode time).\n'
-    text += f'Frames in row-major order: {frames}.\n'
+    order = 'attachment order' if independent else 'row-major order'
+    text += f'Frames in {order}: {frames}.\n'
     text += 'This is the final check; the recording has ended.' if window['end_of_episode'] else 'The recording is still ongoing.'
     start = time.monotonic()
     row = {**window, 'thread_id': thread, 'request_started_at': datetime.now(timezone.utc).isoformat()}
+    if independent:
+        row['frame_ids'] = frame_ids
+        row['input_images'] = [dict(frame_id=frame_id, **episode['frames'][frame_id]) for frame_id in frame_ids]
+        image_input = [image['path'] for image in row['input_images']]
+    else:
+        image_input = window['sheet']
     try:
-        turn, raw, timings = await backend.observe(thread, text, window['sheet'])
+        turn, raw, timings = await backend.observe(thread, text, image_input)
     except (OSError, ValueError, RuntimeError, asyncio.TimeoutError) as error:
         row.update(error=str(error) or type(error).__name__, error_kind='request_error')
     else:
@@ -269,8 +266,8 @@ async def observe_window(backend, thread, episode, window, known_ids):
             if row.get('output_limit_reached'):
                 raise ValueError('Model response hit the token limit')
             answer = parse_answer(raw)
-            validate(answer, known_ids)
-            if isinstance(backend, MoTVLM):
+            validate(answer, frame_ids if independent else known_ids)
+            if isinstance(backend, MoTVLM) and not independent:
                 backend.remember(thread, answer)
             row['answer'] = {**answer, 'evidence': [dict(item, **episode['frames'][item['frame_id']])
                                                    for item in answer['evidence']]}
@@ -336,8 +333,9 @@ async def open_astra(log_path, timeout, default_model=MODEL):
             await astra.reader
 
 
-async def open_motvlm(url, timeout, directory):
-    backend = MoTVLM(url, timeout, RULES, OUTPUT_SCHEMA)
+async def open_motvlm(url, timeout, directory, *, independent_frames=False):
+    rules = INDEPENDENT_FRAME_RULES if independent_frames else RULES
+    backend = MoTVLM(url, timeout, rules, OUTPUT_SCHEMA, independent_frames=independent_frames)
     health = await backend.health()
     (directory / 'health.json').write_text(json.dumps(health, indent=2) + '\n', encoding='utf-8')
     return backend
@@ -345,7 +343,8 @@ async def open_motvlm(url, timeout, directory):
 
 async def run(episodes, output, args):
     if args.model == MOTVLM_MODEL:
-        backend = await open_motvlm(args.motvlm_url, args.timeout, output)
+        backend = await open_motvlm(args.motvlm_url, args.timeout, output,
+                                    independent_frames=args.motvlm_frames_from is not None)
         for item in episodes:
             await evaluate_episode(backend, item, output, None)
         return []
@@ -373,6 +372,8 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--model', choices=[MODEL, MOTVLM_MODEL], default=MODEL)
     parser.add_argument('--motvlm-url', help='Override the endpoint configured in image_eval/tasks.json.')
+    parser.add_argument('--motvlm-frames-from', type=Path, metavar='CONFIG',
+                        help='Reuse a saved frame index for an offline MoTVLM run with separate images and no history.')
     parser.add_argument('--ffmpeg', default='ffmpeg')
     parser.add_argument('--ffprobe', default='ffprobe')
     parser.add_argument('--timeout', type=float, default=120)
@@ -380,6 +381,8 @@ def main():
     parser.add_argument('--warmup', action=argparse.BooleanOptionalAction, default=True,
                         help='Send one text-only warmup in each episode thread before evaluating (default: on).')
     args = parser.parse_args()
+    if args.motvlm_frames_from and args.model != MOTVLM_MODEL:
+        parser.error('--motvlm-frames-from requires --model motvlm')
     videos = [args.videos.resolve() / f'episode_{index:06d}.mp4' for index in range(5)]
     for video in videos:
         if not video.is_file():
@@ -388,9 +391,14 @@ def main():
         args.warmup = False
         args.motvlm_url = configured_url(args.motvlm_url)
     default_output = ROOT / 'results' / ('video-motvlm-v1' if args.model == MOTVLM_MODEL else 'video-astra-v1')
+    if args.motvlm_frames_from:
+        default_output = ROOT / 'results' / 'video-motvlm-frames-no-history'
     output = (args.output or default_output).resolve()
     output.mkdir(parents=True)
-    episodes = [prepare(video, output / video.stem, args.ffmpeg, args.ffprobe) for video in videos]
+    if args.motvlm_frames_from:
+        episodes = reuse_frames(args.motvlm_frames_from.resolve(), videos, output)
+    else:
+        episodes = [prepare(video, output / video.stem, args.ffmpeg, args.ffprobe) for video in videos]
     config = {'task': TASK, 'model': args.model, 'effort': EFFORT if args.model == MODEL else None,
               'rules': RULES, 'schema': OUTPUT_SCHEMA,
               'warmup_prompt': WARMUP_PROMPT if args.warmup else None,
@@ -399,6 +407,8 @@ def main():
               'episodes': episodes}
     if args.model == MOTVLM_MODEL:
         config.update(motvlm_url=args.motvlm_url, history='recent accepted observations plus first success')
+    if args.motvlm_frames_from:
+        config.update(rules=INDEPENDENT_FRAME_RULES, history='none', input_mode='independent_frames')
     (output / 'config.json').write_text(json.dumps(config, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     try:
         failures = asyncio.run(run(episodes, output, args))

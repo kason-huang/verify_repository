@@ -23,6 +23,9 @@
   .details{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
   .details a{display:inline-block;border:1px solid #a4c8c2;border-radius:8px;padding:6px 10px;font-size:14px;text-decoration:none}
   .details a:hover{background:#e5f3ef}
+  .supplementary{margin-top:18px;padding-top:13px;border-top:1px solid var(--line)}
+  .supplementary h3{margin:0 0 6px;font-size:15px}
+  .supplementary p{margin-top:3px;font-size:14px}
   footer{display:flex;align-items:baseline;gap:6px 12px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:15px;font-size:14px}
 </style>
 </head>
@@ -52,6 +55,11 @@
         <a href="results/video-astra-v3-warmup/report.html">Astra 离线报告</a>
         <a href="results/video-motvlm-v1/report.html">MoTVLM 离线报告</a>
       </nav>
+      <div class="supplementary" role="group" aria-labelledby="video-supplementary">
+        <h3 id="video-supplementary">附加测试</h3>
+        <a href="results/video-motvlm-frames-no-history/report.html">MoTVLM 独立帧离线报告</a>
+        <p>每个窗口发送 2–13 张独立 JPEG，无历史判断。</p>
+      </div>
     </section>
   </div>
   <footer>
