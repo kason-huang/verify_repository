@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3DVLM 评测报告</title>
+<style>
+  :root{color-scheme:light;--ink:#17242d;--muted:#52656f;--accent:#006967;--line:#d7e5e4}
+  *{box-sizing:border-box}
+  body{margin:0;background:#f4f8f7;color:var(--ink);font:16px/1.55 system-ui,sans-serif}
+  main{width:min(100%,1060px);margin:auto;padding:clamp(25px,6vw,62px) 18px}
+  h1{font-size:clamp(27px,5vw,42px);line-height:1.14;margin:0 0 8px}
+  h2{font-size:20px;margin:0 0 5px}
+  p{color:var(--muted);margin:0}
+  .reports{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,350px),1fr));gap:16px;margin:24px 0}
+  section{min-width:0;background:#fff;border:1px solid var(--line);border-radius:16px;padding:clamp(16px,3vw,24px)}
+  a{color:var(--accent);text-underline-offset:3px}
+  a:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+  .primary{display:block;margin-top:16px;padding:14px 16px;background:#104b49;color:#fff;border:1px solid #104b49;border-radius:10px;text-decoration:none}
+  .primary:hover{background:#165e58}
+  .primary strong{display:block;font-size:17px}
+  .primary span{display:block;color:#dbefeb;font-size:14px;margin-top:4px}
+  .details{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+  .details a{display:inline-block;border:1px solid #a4c8c2;border-radius:8px;padding:6px 10px;font-size:14px;text-decoration:none}
+  .details a:hover{background:#e5f3ef}
+  footer{display:flex;align-items:baseline;gap:6px 12px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:15px;font-size:14px}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>3DVLM 评测报告</h1>
+    <p>同一首页查看图片和视频的离线评测结果，无需启动服务。</p>
+  </header>
+  <div class="reports">
+    <section aria-labelledby="image-report">
+      <h2 id="image-report">图片评测</h2>
+      <p>托盘判空与物品计数，共 12 个用例。</p>
+      <a class="primary" href="image_eval/results/astra-comparison.html">
+        <strong>图片评测对比报告</strong>
+        <span>MoTVLM 与 Astra 的逐题答案、真值和耗时</span>
+      </a>
+    </section>
+    <section aria-labelledby="video-report">
+      <h2 id="video-report">视频评测</h2>
+      <p>右臂抓取任务监控，共 5 段视频、29 个窗口。</p>
+      <a class="primary" href="results/video-model-comparison/report.html">
+        <strong>视频评测对比报告</strong>
+        <span>Astra 与 MoTVLM 的逐段判断、证据和请求示例</span>
+      </a>
+      <nav class="details" aria-label="视频模型明细">
+        <a href="results/video-astra-v3-warmup/report.html">Astra 离线报告</a>
+        <a href="results/video-motvlm-v1/report.html">MoTVLM 离线报告</a>
+      </nav>
+    </section>
+  </div>
+  <footer>
+    <a href="http://127.0.0.1:8766/live">实时监控</a>
+    <p>发起新的模型判断需要启动本地监控服务。</p>
+  </footer>
+</main>
+</body>
+</html>

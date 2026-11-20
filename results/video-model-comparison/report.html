@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Astra 与 MoTVLM 视频评测对比</title>
+<style>
+:root{color-scheme:light;--ink:#152d33;--muted:#50666d;--accent:#075e59;--line:#d7e6e6;--surface:#fff}
+*{box-sizing:border-box}body{background:#f3f8f7;color:var(--ink);margin:0;font:15px/1.6 system-ui,sans-serif}main{max-width:1080px;margin:auto;padding:32px 18px 48px}h1{font-size:clamp(26px,4vw,40px);line-height:1.17;margin:20px 0 8px}h2{font-size:20px;margin:0 0 9px}p{margin:5px 0 12px;color:var(--muted)}nav{display:flex;flex-wrap:wrap;gap:8px}nav a{background:#e2f1ec;color:var(--accent);padding:7px 12px;border-radius:8px;text-decoration:none;font-weight:650}a{color:var(--accent)}a:focus-visible{outline:2px solid var(--accent);outline-offset:3px}section{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px;margin-top:15px}.highlights{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin:17px 0}.metric{border:1px solid #a4c9c1;padding:12px 15px;border-radius:10px;background:#e6f4ef}.metric strong,.metric span{display:block}.metric strong{font-size:24px;color:var(--accent)}.metric span{color:var(--muted)}.table{overflow:auto}table{width:100%;border-collapse:collapse}th,td{padding:9px 11px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}th{background:#eaf4f3;color:#245052}td:first-child{font-weight:600}code{overflow-wrap:anywhere}.note{font-size:14px}.example{display:grid;grid-template-columns:minmax(0,360px) 1fr;gap:16px}figure,dl{margin:0}img{display:block;width:100%;border-radius:9px}figcaption,dd{color:var(--muted)}dt{font-weight:650}dd{margin:0 0 12px}@media(max-width:640px){.example{grid-template-columns:1fr}th,td{min-width:96px}}
+nav a[aria-current=page]{background:#075e59;color:#fff}
+/* prompt-examples */
+.prompt-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}
+.prompt-pair article{padding:14px;border:1px solid var(--line);border-radius:10px;min-width:0}
+#promptExamples h3{margin:0 0 6px;font-size:16px}
+.prompt-code{background:#edf4f4;color:#162f33;border-radius:7px;padding:12px;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0 12px}
+#promptExamples details+details{margin-top:8px}#promptExamples summary{color:var(--accent);cursor:pointer;font-weight:650}
+@media(max-width:680px){.prompt-pair{grid-template-columns:1fr}}
+/* prompt-examples:end */
+#promptRules,#promptExamples,#promptDifferences{scroll-margin-top:120px}#promptRules h3{font-size:16px;margin:16px 0 4px}#promptRules ul{margin:4px 0 9px;padding-left:22px}#promptRules li+li{margin-top:6px}
+.request-sheet{max-width:880px;margin:14px 0 16px}.request-sheet img{height:auto;aspect-ratio:1536/1248;border:1px solid var(--line);background:#edf4f4}.request-sheet a{display:block}.request-sheet span{display:inline-block;margin-top:4px}.request-sheet figcaption{font-size:13px;margin-top:4px}
+#monitoringMethod,#monitoringSheet,#requestSetup,#comparisonResults{scroll-margin-top:120px}
+.report-outline{margin:12px 0 18px}.report-outline a{font-size:14px}.method-steps{padding-left:24px;margin:10px 0 15px}.method-steps li+li{margin-top:6px}#monitoringSheet{max-width:720px}
+.example-response{margin-top:16px;padding-top:12px;border-top:1px solid var(--line)}.example-response h4{font-size:15px;margin:0 0 8px}.output-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.output-fields div{padding:5px 8px;background:#edf4f4;border-radius:6px}.output-fields dt{font-size:12px;color:var(--muted)}.output-fields dd{margin:0;font-size:14px;overflow-wrap:anywhere}
+</style><body><main>
+<nav aria-label="报告导航"><a href="../../index.html">离线首页</a><a href="../video-astra-v3-warmup/report.html">Astra 原报告</a><a href="../video-motvlm-v1/report.html">MoTVLM 原报告</a><a href="report.html" aria-current="page">对比报告</a></nav>
+<h1>Astra 与 MoTVLM 视频评测对比</h1>
+<p>5 个相同的 cam_high episode，共 29 个相同窗口。逐字节核对了两边的抽帧拼图。</p>
+
+<p class="note">数据来源：当前评测服务上的 <a href="http://127.0.0.1:8766/">Astra 离线报告</a> 与 <a href="http://127.0.0.1:8766/reports/motvlm/">MoTVLM 离线报告</a>。两份报告各有 29 个窗口。</p>
+<nav class="report-outline" aria-label="报告目录">
+  <a href="#monitoringMethod">监控流程</a>
+  <a href="#promptRules">判定规则</a>
+  <a href="#promptExamples">请求示例</a>
+  <a href="#comparisonResults">对比结果</a>
+</nav>
+<section id="monitoringMethod" aria-labelledby="monitoringMethodTitle">
+  <h2 id="monitoringMethodTitle">测试目标与监控流程</h2>
+  <p>模拟监督机器人执行任务 <code>use the right arm to pick up one box</code>。模型要随着画面推进，更新任务进度，判断成功、失败或无法确认，并在需要时建议干预。</p>
+  <ol class="method-steps">
+    <li><strong>抽帧组成拼图。</strong>把每段视频按 3 秒划分窗口，每隔 8 帧取一帧，并保留窗口末帧。每个判断请求只附当时这一张拼图。</li>
+    <li><strong>按视频时间顺序送入。</strong>模型在当前窗口作答时，只能用截至该窗口的画面和此前的上下文。编号和时间用于定位证据帧。</li>
+    <li><strong>记录判断和耗时。</strong>保存任务阶段、结果、干预建议和证据。离线评测在同一段内等当前请求返回后再推进下一窗。视频时间表示画面截止点，请求耗时表示返回等待。</li>
+  </ol>
+  <p><strong>实际请求附带的画面</strong> · Episode 000004 的第四个窗口</p>
+  <figure id="monitoringSheet" class="request-sheet">
+    <a id="exampleSheet" href="../video-astra-v3-warmup/episode_000004/sheets/003.jpg" data-served-url="/media/episode_000004/sheets/003.jpg">
+      <img id="exampleSheetPreview" width="1536" height="1248" loading="lazy" alt="Episode 000004 从 9.000 到 11.967 秒的 13 帧抽帧拼图">
+      <span>打开原始拼图</span>
+    </a>
+    <figcaption>两种模型在这个窗口收到的是同一张拼图。13 帧按从左到右、从上到下排列，覆盖 9.000–11.967 秒。</figcaption>
+  </figure>
+</section>
+<section id="promptRules" aria-labelledby="promptRulesTitle">
+  <h2 id="promptRulesTitle">视频监控判定规则（中文说明）</h2>
+  <h3>看哪些画面</h3>
+  <p>严格按照任务指令判断。每次只用当前按时间排列的拼图和本轮此前已看到的观察，根据画面随时间的变化判断阶段。模型不调用工具。右臂按机器人自身的方向区分。</p>
+  <h3>怎样判定成功或失败</h3>
+  <ul>
+    <li><strong>成功</strong>（<code>success</code>）：看见机器人右臂抓住一个盒子，并把它提离原支撑面。仅凭夹爪闭合不能确认接触或提起。提起后的放置不计入本任务。确认成功后保持结论，除非后续画面表明先前看错了。</li>
+    <li><strong>失败</strong>（<code>failure</code>）：明确本轮已失败，或在片段结束时能确认未达成目标。抓空后仍可重试，属于一次尝试失败。</li>
+    <li><strong>无法确认</strong>（<code>uncertain</code>）：现有画面不足以验证结果，例如关键动作被遮挡。片段结束本身不能作为成功证据。</li>
+  </ul>
+  <h3>什么时候需要干预</h3>
+  <p>在任务被阻断、用错手臂提起盒子、盒子掉到明显够不到的位置、明确抓取失败三次，或一次可见的失败后至少 <strong>6 秒</strong>未取得进展时，建议 <code>intervene</code>。正常但缓慢的接近动作可以继续观察。</p>
+  <p>可恢复的失败建议 <code>retry</code>，正常推进用 <code>continue</code>，成功用 <code>finish</code>，证据不足用 <code>observe</code>。</p>
+  <p class="note">三次失败和六秒无进展是本轮评测约定的干预阈值。</p>
+  <h3>输出里应包含什么</h3>
+  <ul>
+    <li><code>phase</code> 表示当前有意义的任务阶段。<code>progress</code> 说明阶段和自上次检查以来的变化。</li>
+    <li><code>reason</code> 解释判断结果与建议。<code>evidence</code> 引用已经看到的 1–2 个帧号，并说明每帧可见的事实。</li>
+    <li>进度、理由和证据描述使用中文，帧号原样引用。</li>
+  </ul>
+  <p><a href="#promptExamples">对照英文 Prompt 和实际发送示例</a></p>
+</section>
+<section id="requestSetup"><h2>发送给模型的内容</h2><p>共同使用任务 <code>use the right arm to pick up one box</code>，判定标准包括右臂把一个盒子提离原支撑面，以及按设定规则判断是否需要干预。</p><div class="table"><table><thead><tr><th scope="col">项目</th><th scope="col">Astra</th><th scope="col">MoTVLM</th></tr></thead><tbody><tr><td>任务与规则</td><td>原始 LeRobot 指令；判定规则作为会话指令</td><td>相同原始指令和判定规则；每次放入 question 文本</td></tr><tr><td>每个窗口</td><td>时间戳、可用帧编号、结束标志和当前抽帧拼图</td><td>相同窗口文字和拼图；另加拼图读取说明和 JSON 文本要求</td></tr><tr><td>前窗信息</td><td>每个 episode 一个会话，沿用会话历史</td><td>接口不保存会话；文本附上最近两条通过格式检查的判断，另附首次成功记录（若有且未重复）</td></tr><tr><td>输出约束</td><td>请求接口附带 JSON Schema</td><td>文本要求直接返回 JSON，接收后按同一组字段和证据编号检查</td></tr><tr><td>预热与调度</td><td>每段纯文本预热后并行，最多 5 个 episode</td><td>逐段串行；本轮没有纯文本预热</td></tr></tbody></table></div><p class="note">任务文字、判据和抽帧输入已经对齐。完整请求的组织方式、历史和输出约束有差异，报告按各自配置记录。</p></section>
+<!-- prompt-examples:start -->
+<section id="promptExamples" aria-labelledby="promptExampleTitle">
+  <h2 id="promptExampleTitle">两种模型的实际发送示例</h2>
+  <p>以下展示 <a href="#monitoringSheet">上面的同一张拼图</a>在两个接口里的请求。此例在 Episode 000004 的第四个窗口，截止时间是 11.967 秒。每种模型的实际输出列在对应请求下方。</p>
+  <p class="note">以下请求按本轮日志和评测代码重建。保留原有指令和历史内容；会话 ID 和临时目录做了替换，请求示例中的图片数据用文件名表示，实际附带的拼图见上方。</p>
+  <h3>两边都收到的当前窗口正文</h3>
+  <pre class="prompt-code">Task instruction: use the right arm to pick up one box
+Check at 11.967s (episode time).
+Frames in row-major order: F000270=9.000s, F000278=9.267s, F000286=9.533s, F000294=9.800s, F000302=10.067s, F000310=10.333s, F000318=10.600s, F000326=10.867s, F000334=11.133s, F000342=11.400s, F000350=11.667s, F000358=11.933s, F000359=11.967s.
+The recording is still ongoing.</pre>
+  <aside id="promptDifferences" aria-labelledby="promptDifferencesTitle">
+    <h3 id="promptDifferencesTitle">哪些输入一致，哪些差异会影响对比</h3>
+    <p>两边使用相同的 LeRobot 原始指令、判定规则、窗口截止时间、帧号与时间的对应关系、录像结束标记和当前拼图。这个窗口的 13 帧覆盖 9.000–11.967 秒，两个请求都只使用截至该时刻的信息。</p>
+    <ul>
+      <li><strong>规则与历史</strong>。Astra 建立会话时发送规则，后续沿用本段会话中已经提交的拼图和返回的判断。MoTVLM 的 <code>/generate</code> 每次重新发送规则和当前拼图，在文本里附上最近两条有效判断，并在适用时保留首次成功记录。历史画面和历史判断的差异都可能影响模型对进度、成功或干预的判断。</li>
+      <li><strong>输出约束</strong>。Astra 每次视频请求通过 <code>outputSchema</code> 传入结构约束。MoTVLM 在 <code>question</code> 里用文字说明拼图读法、JSON 字段和允许值。两套流程收到结果后都检查输出结构和证据帧号。接口约束方式的差异可能影响有效返回率。</li>
+    </ul>
+    <p>例如，MoTVLM 在 11.967 秒的请求中带上两条“右夹爪已闭合、正在抓取”的历史判断，本次仍返回进行中。Astra 的此前会话记录了第一次尝试未见提起以及随后重新抓取，本次引用 <code>F000294</code> 和 <code>F000326</code> 判定成功。仅凭这次对比无法确定历史差异对判断分歧的贡献。</p>
+    <p class="note">片尾判断和有效返回反映本轮两套监控流程的表现。要将结果差异归因于模型本身，还需要对齐历史输入与输出约束。耗时也受接口、预热和调度条件影响。</p>
+  </aside>
+  <div class="prompt-pair">
+    <article><h3>Astra</h3>
+      <p>建会话时发送判定规则，再单独发一条纯文本预热。到这个窗口，只在 <code>turn/start</code> 发上面的正文和一张拼图；先前的画面和判断已在同一个会话里。</p>
+      <p>例如，结束状态和证据字段的格式直接通过 <code>outputSchema</code> 交给接口约束。</p>
+      <details><summary>展开：会话指令、预热和当前请求</summary><pre class="prompt-code">{
+  &quot;thread/start&quot;: {
+    &quot;model&quot;: &quot;gpt-6-astra&quot;,
+    &quot;cwd&quot;: &quot;[临时工作目录]&quot;,
+    &quot;approvalPolicy&quot;: &quot;never&quot;,
+    &quot;sandbox&quot;: &quot;read-only&quot;,
+    &quot;ephemeral&quot;: true,
+    &quot;developerInstructions&quot;: &quot;Evaluate the task instruction exactly as written. This is a causal replay of one\nrobot episode. Use the current chronological contact sheet and the observations from\nthis conversation only. Do not use tools. Judge phases from visible changes over time.\nUse the robot&#x27;s own right arm, and distinguish its side from the viewer&#x27;s side.\nDo not infer contact or lift just from a closed gripper. Success requires visual evidence\nthat the right arm grasped one box and lifted it clear of its original supporting surface.\nLater placement is outside the task. Once visibly confirmed, retain success unless later\nevidence shows the original observation was mistaken. A recoverable unsuccessful grasp\nis an attempt failure, not an episode failure. Use `failure` on a clear terminal failed\nattempt or at the end if the goal was visibly not achieved. Use `uncertain` if the available\nviews cannot verify the outcome; do not assume success from the episode ending.\nRecommend `intervene` only for a blocked task, a wrong-arm lift, a dropped object visibly\nout of reach, three clearly failed grasps, or at least six seconds without progress after a\nvisible failed attempt. These are evaluation rules, not facts about the robot. Ordinary\nslow approach is not a stall. Recommend `retry` for a reversible failed attempt when\nappropriate; otherwise use `continue`, `finish` on success, or `observe` if evidence is lacking.\nMap `phase` to the latest meaningful task stage. `progress` describes the stage and what\nchanged since the previous check. `reason` explains the verdict and recommendation.\n`evidence` cites one or two frame IDs previously supplied, with the visible fact at each.\nUse Chinese for progress, reason, and evidence observations. IDs must be exact.&quot;
+  },
+  &quot;turn/start（此前单独发送的预热）&quot;: {
+    &quot;threadId&quot;: &quot;[本段会话 ID]&quot;,
+    &quot;effort&quot;: &quot;low&quot;,
+    &quot;input&quot;: [
+      {
+        &quot;type&quot;: &quot;text&quot;,
+        &quot;text&quot;: &quot;Connection check only. No video is provided. Reply with READY only and do not count this as a task observation.&quot;
+      }
+    ]
+  },
+  &quot;turn/start&quot;: {
+    &quot;threadId&quot;: &quot;[本段会话 ID]&quot;,
+    &quot;effort&quot;: &quot;low&quot;,
+    &quot;input&quot;: [
+      {
+        &quot;type&quot;: &quot;text&quot;,
+        &quot;text&quot;: &quot;Task instruction: use the right arm to pick up one box\nCheck at 11.967s (episode time).\nFrames in row-major order: F000270=9.000s, F000278=9.267s, F000286=9.533s, F000294=9.800s, F000302=10.067s, F000310=10.333s, F000318=10.600s, F000326=10.867s, F000334=11.133s, F000342=11.400s, F000350=11.667s, F000358=11.933s, F000359=11.967s.\nThe recording is still ongoing.&quot;
+      },
+      {
+        &quot;type&quot;: &quot;localImage&quot;,
+        &quot;path&quot;: &quot;episode_000004/sheets/003.jpg&quot;
+      }
+    ],
+    &quot;outputSchema&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;properties&quot;: {
+        &quot;phase&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;enum&quot;: [
+            &quot;waiting&quot;,
+            &quot;approaching&quot;,
+            &quot;grasping&quot;,
+            &quot;lifting&quot;,
+            &quot;retrying&quot;,
+            &quot;after_pick&quot;,
+            &quot;unclear&quot;
+          ]
+        },
+        &quot;progress&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;outcome&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;enum&quot;: [
+            &quot;in_progress&quot;,
+            &quot;success&quot;,
+            &quot;failure&quot;,
+            &quot;uncertain&quot;
+          ]
+        },
+        &quot;needs_intervention&quot;: {
+          &quot;type&quot;: &quot;boolean&quot;
+        },
+        &quot;decision&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;enum&quot;: [
+            &quot;continue&quot;,
+            &quot;retry&quot;,
+            &quot;intervene&quot;,
+            &quot;finish&quot;,
+            &quot;observe&quot;
+          ]
+        },
+        &quot;reason&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;evidence&quot;: {
+          &quot;type&quot;: &quot;array&quot;,
+          &quot;items&quot;: {
+            &quot;type&quot;: &quot;object&quot;,
+            &quot;properties&quot;: {
+              &quot;frame_id&quot;: {
+                &quot;type&quot;: &quot;string&quot;
+              },
+              &quot;observation&quot;: {
+                &quot;type&quot;: &quot;string&quot;
+              }
+            },
+            &quot;required&quot;: [
+              &quot;frame_id&quot;,
+              &quot;observation&quot;
+            ],
+            &quot;additionalProperties&quot;: false
+          }
+        }
+      },
+      &quot;required&quot;: [
+        &quot;phase&quot;,
+        &quot;progress&quot;,
+        &quot;outcome&quot;,
+        &quot;needs_intervention&quot;,
+        &quot;decision&quot;,
+        &quot;reason&quot;,
+        &quot;evidence&quot;
+      ],
+      &quot;additionalProperties&quot;: false
+    }
+  }
+}</pre></details>
+      <div class="example-response">
+        <h4>Astra 的实际输出</h4>
+        <dl class="output-fields"><div><dt>结果</dt><dd>成功（success）</dd></div><div><dt>阶段</dt><dd>已完成抓取（after_pick）</dd></div><div><dt>建议</dt><dd>结束（finish）</dd></div><div><dt>需要干预</dt><dd>否</dd></div></dl>
+        <p><strong>进度</strong> · 右臂重试成功，夹住一个盒子并将其抬离原槽位，随后移向前方平台。</p>
+        <p><strong>理由</strong> · 已清楚看到盒子随机器人右臂夹爪升起并离开原支撑面，满足任务要求；后续放置不影响成功判定。</p>
+        <p><strong>证据帧</strong> · <a href="../video-astra-v3-warmup/episode_000004/frames/F000294.jpg"><code>F000294</code> · 9.800 秒</a>；<a href="../video-astra-v3-warmup/episode_000004/frames/F000326.jpg"><code>F000326</code> · 10.867 秒</a></p>
+        <details><summary>查看完整原始输出</summary>
+          <p class="note">以下 JSON 为该次请求返回的原值，仅调整排版。</p>
+          <pre class="prompt-code">{
+  &quot;phase&quot;: &quot;after_pick&quot;,
+  &quot;progress&quot;: &quot;右臂重试成功，夹住一个盒子并将其抬离原槽位，随后移向前方平台。&quot;,
+  &quot;outcome&quot;: &quot;success&quot;,
+  &quot;needs_intervention&quot;: false,
+  &quot;decision&quot;: &quot;finish&quot;,
+  &quot;reason&quot;: &quot;已清楚看到盒子随机器人右臂夹爪升起并离开原支撑面，满足任务要求；后续放置不影响成功判定。&quot;,
+  &quot;evidence&quot;: [
+    {
+      &quot;frame_id&quot;: &quot;F000294&quot;,
+      &quot;observation&quot;: &quot;盒子被右臂夹爪夹持抬起，底部已离开原槽位支撑面。&quot;
+    },
+    {
+      &quot;frame_id&quot;: &quot;F000326&quot;,
+      &quot;observation&quot;: &quot;盒子持续随右臂移出料箱，原槽位已空出。&quot;
+    }
+  ]
+}</pre>
+        </details>
+      </div>
+    </article>
+    <article><h3>MoTVLM</h3>
+      <p>每次 <code>/generate</code> 请求都把判定规则、输出格式、之前的判断和当前窗口正文拼进 <code>question</code>，拼图放在 <code>images</code>。</p>
+      <details><summary>查看这次随请求带上的两条历史判断</summary>
+        <p class="note">来自本段 5.967 秒和 8.967 秒两个窗口。以下只是为了阅读而重新排版。</p>
+        <pre class="prompt-code">[
+  {
+    &quot;phase&quot;: &quot;grasping&quot;,
+    &quot;outcome&quot;: &quot;in_progress&quot;,
+    &quot;progress&quot;: &quot;right gripper closed, grasping the box&quot;,
+    &quot;evidence&quot;: [
+      {
+        &quot;frame_id&quot;: &quot;F000090&quot;,
+        &quot;observation&quot;: &quot;right gripper closed, grasping the box&quot;
+      }
+    ]
+  },
+  {
+    &quot;phase&quot;: &quot;grasping&quot;,
+    &quot;outcome&quot;: &quot;in_progress&quot;,
+    &quot;progress&quot;: &quot;right gripper closed, grasping the box&quot;,
+    &quot;evidence&quot;: [
+      {
+        &quot;frame_id&quot;: &quot;F000268&quot;,
+        &quot;observation&quot;: &quot;right gripper closed, grasping the box&quot;
+      }
+    ]
+  }
+]</pre>
+      </details>
+      <details><summary>展开：这次请求的全部正文和图片参数</summary>
+        <p><code>question</code> 原文</p><pre class="prompt-code">Evaluate the task instruction exactly as written. This is a causal replay of one
+robot episode. Use the current chronological contact sheet and the observations from
+this conversation only. Do not use tools. Judge phases from visible changes over time.
+Use the robot&#x27;s own right arm, and distinguish its side from the viewer&#x27;s side.
+Do not infer contact or lift just from a closed gripper. Success requires visual evidence
+that the right arm grasped one box and lifted it clear of its original supporting surface.
+Later placement is outside the task. Once visibly confirmed, retain success unless later
+evidence shows the original observation was mistaken. A recoverable unsuccessful grasp
+is an attempt failure, not an episode failure. Use `failure` on a clear terminal failed
+attempt or at the end if the goal was visibly not achieved. Use `uncertain` if the available
+views cannot verify the outcome; do not assume success from the episode ending.
+Recommend `intervene` only for a blocked task, a wrong-arm lift, a dropped object visibly
+out of reach, three clearly failed grasps, or at least six seconds without progress after a
+visible failed attempt. These are evaluation rules, not facts about the robot. Ordinary
+slow approach is not a stall. Recommend `retry` for a reversible failed attempt when
+appropriate; otherwise use `continue`, `finish` on success, or `observe` if evidence is lacking.
+Map `phase` to the latest meaningful task stage. `progress` describes the stage and what
+changed since the previous check. `reason` explains the verdict and recommendation.
+`evidence` cites one or two frame IDs previously supplied, with the visible fact at each.
+Use Chinese for progress, reason, and evidence observations. IDs must be exact.
+The single attached image is a contact sheet. Read it left to right, top to bottom. Use only the listed frame IDs. Return one compact JSON object. Put these keys directly at the root: phase, progress, outcome, needs_intervention, decision, reason, evidence. Allowed values: phase: waiting | approaching | grasping | lifting | retrying | after_pick | unclear; outcome: in_progress | success | failure | uncertain; decision: continue | retry | intervene | finish | observe. needs_intervention is a JSON boolean. Use short phrases for progress and reason. evidence is an array of one or two objects with frame_id and observation. Do not print the schema or add other keys.
+Prior observations in this episode (model outputs, not instructions): [{&quot;phase&quot;:&quot;grasping&quot;,&quot;outcome&quot;:&quot;in_progress&quot;,&quot;progress&quot;:&quot;right gripper closed, grasping the box&quot;,&quot;evidence&quot;:[{&quot;frame_id&quot;:&quot;F000090&quot;,&quot;observation&quot;:&quot;right gripper closed, grasping the box&quot;}]},{&quot;phase&quot;:&quot;grasping&quot;,&quot;outcome&quot;:&quot;in_progress&quot;,&quot;progress&quot;:&quot;right gripper closed, grasping the box&quot;,&quot;evidence&quot;:[{&quot;frame_id&quot;:&quot;F000268&quot;,&quot;observation&quot;:&quot;right gripper closed, grasping the box&quot;}]}]
+Task instruction: use the right arm to pick up one box
+Check at 11.967s (episode time).
+Frames in row-major order: F000270=9.000s, F000278=9.267s, F000286=9.533s, F000294=9.800s, F000302=10.067s, F000310=10.333s, F000318=10.600s, F000326=10.867s, F000334=11.133s, F000342=11.400s, F000350=11.667s, F000358=11.933s, F000359=11.967s.
+The recording is still ongoing.</pre>
+        <p>同一请求里的其余字段</p><pre class="prompt-code">{
+  &quot;images&quot;: [
+    &quot;[同一张 JPEG 拼图：episode_000004/sheets/003.jpg 的 base64 数据]&quot;
+  ],
+  &quot;layout&quot;: &quot;single_image&quot;,
+  &quot;max_new_tokens&quot;: 384
+}</pre>
+      </details>
+      <div class="example-response">
+        <h4>MoTVLM 的实际输出</h4>
+        <dl class="output-fields"><div><dt>结果</dt><dd>进行中（in_progress）</dd></div><div><dt>阶段</dt><dd>尝试抓取（grasping）</dd></div><div><dt>建议</dt><dd>继续（continue）</dd></div><div><dt>需要干预</dt><dd>否</dd></div></dl>
+        <p><strong>进度</strong> · right gripper closed, grasping the box</p>
+        <p><strong>理由</strong> · 等待拾取完成</p>
+        <p><strong>证据帧</strong> · <a href="../video-motvlm-v1/episode_000004/frames/F000359.jpg"><code>F000359</code> · 11.967 秒</a></p>
+        <details><summary>查看完整原始输出</summary>
+          <p class="note">以下 JSON 为该次请求返回的原值，仅调整排版。</p>
+          <pre class="prompt-code">{
+  &quot;phase&quot;: &quot;grasping&quot;,
+  &quot;progress&quot;: &quot;right gripper closed, grasping the box&quot;,
+  &quot;outcome&quot;: &quot;in_progress&quot;,
+  &quot;needs_intervention&quot;: false,
+  &quot;decision&quot;: &quot;continue&quot;,
+  &quot;reason&quot;: &quot;等待拾取完成&quot;,
+  &quot;evidence&quot;: [
+    {
+      &quot;frame_id&quot;: &quot;F000359&quot;,
+      &quot;observation&quot;: &quot;right gripper closed, grasping the box&quot;
+    }
+  ]
+}</pre>
+        </details>
+      </div>
+    </article>
+  </div>
+</section>
+<script>
+  const exampleSheet = document.getElementById('exampleSheet');
+  if (location.protocol === 'http:' || location.protocol === 'https:') {
+    exampleSheet.href = exampleSheet.dataset.servedUrl;
+  }
+  document.getElementById('exampleSheetPreview').src = exampleSheet.href;
+</script>
+<!-- prompt-examples:end -->
+<section id="comparisonResults"><h2>对比结果</h2>
+<div class="highlights"><div class="metric"><strong>5/5 对 0/5</strong><span>片尾判成功 · Astra / MoTVLM</span></div><div class="metric"><strong>29 对 24</strong><span>通过格式与证据编号检查的返回</span></div><div class="metric"><strong>6.8 s 对 9.6 s</strong><span>完整请求耗时中位数</span></div></div>
+<p class="note">两套流程使用相同的任务、判定规则和当前窗口画面。片尾判断、有效返回和耗时结合各自的请求配置解读。<a href="#promptDifferences">查看请求差异及其影响</a>。</p>
+<div class="table"><table><thead><tr><th scope="col">记录项</th><th scope="col">Astra</th><th scope="col">MoTVLM</th></tr></thead><tbody><tr><td>已记录的窗口</td><td>29</td><td>29</td></tr><tr><td>有效返回（格式与证据编号通过）</td><td>29</td><td>24</td></tr><tr><td>片尾判成功</td><td>5</td><td>0</td></tr><tr><td>片尾判失败</td><td>0</td><td>0</td></tr><tr><td>片尾仍进行中</td><td>0</td><td>5</td></tr><tr><td>片尾无法确认或无有效返回</td><td>0</td><td>0</td></tr><tr><td>曾报需要干预的 episode</td><td>0</td><td>0</td></tr></tbody></table></div><p class="note">这批数据没有人工评分真值。有效返回只表示格式与帧编号通过检查；片尾仍进行中表示模型未给出最终判断。</p></section>
+<section><h2>逐段结果</h2><div class="table"><table><thead><tr><th scope="col">Episode</th><th scope="col">Astra 片尾判断</th><th scope="col">Astra 首次判成功（视频时间）</th><th scope="col">Astra 有效返回</th><th scope="col">MoTVLM 片尾判断</th><th scope="col">MoTVLM 首次判成功（视频时间）</th><th scope="col">MoTVLM 有效返回</th></tr></thead><tbody><tr><td>000000</td><td>成功</td><td>14.967 s</td><td>7/7</td><td>结束未判定</td><td>—</td><td>7/7</td></tr><tr><td>000001</td><td>成功</td><td>14.967 s</td><td>7/7</td><td>结束未判定</td><td>—</td><td>5/7</td></tr><tr><td>000002</td><td>成功</td><td>11.967 s</td><td>5/5</td><td>结束未判定</td><td>—</td><td>3/5</td></tr><tr><td>000003</td><td>成功</td><td>8.967 s</td><td>5/5</td><td>结束未判定</td><td>—</td><td>4/5</td></tr><tr><td>000004</td><td>成功</td><td>11.967 s</td><td>5/5</td><td>结束未判定</td><td>—</td><td>5/5</td></tr></tbody></table></div><p class="note">“首次判成功”是模型输出成功所在的窗口截止时间，证据帧可能更早。</p></section>
+<section><h2>同一窗口的判断差异</h2><p>Episode 000003，视频时间 8.967 s。两边看到相同拼图。</p><div class="example"><figure><a href="../video-astra-v3-warmup/episode_000003/frames/F000269.jpg"><img src="../video-astra-v3-warmup/episode_000003/frames/F000269.jpg" alt="Astra 引用的实际画面"></a><figcaption>引用帧 F000269 · 8.967 s</figcaption></figure><dl><dt>Astra · 成功</dt><dd>右臂夹住最右侧的一个盒子并向上提起，盒子已明显离开原支撑面。</dd><dt>MoTVLM · 进行中</dt><dd>grasp the box</dd></dl></div></section>
+<section><h2>请求耗时</h2><div class="table"><table><thead><tr><th scope="col">请求耗时中位数</th><th scope="col">Astra</th><th scope="col">MoTVLM</th></tr></thead><tbody><tr><td>全部视频窗口</td><td>6.8 s</td><td>9.6 s</td></tr><tr><td>每段第一个窗口</td><td>9.5 s</td><td>11.8 s</td></tr><tr><td>同一段后续窗口</td><td>6.7 s</td><td>9.4 s</td></tr><tr><td>每段纯文本预热（单独计时）</td><td>7.6 s</td><td>未执行</td></tr></tbody></table></div><p class="note">每次实际请求从发送到完整结果返回的墙钟时间，包含格式未通过的返回。Astra 预热与建会话不在视频请求计时里。两种接口的服务端处理和历史包装不同，表中时间用于比较这两套评测流程的表现。</p></section>
+</main></body></html>

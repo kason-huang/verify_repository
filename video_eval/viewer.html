@@ -11,10 +11,23 @@ nav{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}button{font:inherit;bord
 .grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:16px;align-items:start}.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;min-width:0}.player video{width:100%;aspect-ratio:4/3;display:block;background:#111b20;border-radius:9px}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px}.toolbar span{font-variant-numeric:tabular-nums;color:var(--muted)}.mode{display:flex;gap:6px}.state-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow-wrap:anywhere;gap:9px;margin:0 0 12px}.state-grid div{border:1px solid var(--line);border-radius:9px;padding:9px 11px}.state-grid dt{font-size:12px;color:var(--muted);margin-bottom:3px}.state-grid dd{margin:0}.why{margin:6px 0 0}.proof{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.proof figure{margin:0;min-width:0}.proof img{width:100%;display:block;border-radius:6px}.proof figcaption{font-size:13px;line-height:1.45;margin-top:5px}.proof button{padding:1px 5px;margin:0 4px 4px 0;font-size:12px}.input-link{display:inline-block;margin-top:12px;color:var(--accent);font-size:13px}.history{margin-top:16px}.history-list{display:grid;gap:6px}.event{width:100%;display:grid;grid-template-columns:90px 104px 112px minmax(0,1fr);gap:8px;align-items:center;text-align:left}.event[aria-current=true]{border-color:var(--accent);box-shadow:inset 3px 0 var(--accent)}.event time{font-variant-numeric:tabular-nums}.event .pill{width:max-content}.note{font-size:13px;margin-top:14px}.error{color:var(--red)}[hidden]{display:none!important}
 @media(max-width:800px){main{padding:22px 12px}.grid{grid-template-columns:1fr}.event{grid-template-columns:65px 78px 86px minmax(0,1fr);gap:5px;font-size:13px}.event .pill{font-size:11px;padding:3px 6px}}@media(max-width:500px){.event .event-detail{grid-column:1/-1}header{display:block}#runState{margin-top:9px}}
 .event .duration{display:block;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}.check-duration{font-size:13px;margin:-6px 0 10px}
+.raw-response{font-size:13px;margin-top:10px}.raw-response pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.site-nav{position:sticky;top:8px;z-index:5;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:0 0 22px;padding:6px;border:1px solid #0f4445;border-radius:13px;background:#154d4d;box-shadow:0 6px 16px #173c4526}
+.site-nav a{display:flex;align-items:center;justify-content:center;min-height:50px;padding:7px 6px;border:1px solid #ffffff40;border-radius:8px;background:transparent;color:#fff;font-size:clamp(13px,2.4vw,16px);font-weight:650;line-height:1.3;text-align:center;text-decoration:none}
+.site-nav a:hover{background:#226363}
+.site-nav a[aria-current=page]{border-color:#fff;background:#fff;color:#104644;font-weight:750}
+.site-nav a:focus-visible{outline:2px solid #ffd17c;outline-offset:-4px}
+@media(max-width:560px){.site-nav{grid-template-columns:repeat(2,minmax(0,1fr))}.site-nav a{min-height:42px}}
 </style>
 </head>
 <body>
 <main>
+<nav id="siteNav" class="site-nav" aria-label="评测导航" hidden>
+  <a href="/">Astra 离线报告</a>
+  <a href="/reports/motvlm/">MoTVLM 离线报告</a>
+  <a href="/reports/comparison/">对比报告</a>
+  <a href="/live">实时监控</a>
+</nav>
 <header>
   <div><h1>S2 视频监控评测</h1><p id="instruction" class="instruction"></p>
     <p id="warmupNote" class="note" hidden>本报告的数据在 Astra 预热后获得。每个 episode 先在同一会话发送一条纯文本预热请求，再提交视频画面。预热耗时单独记录。</p>
@@ -54,10 +67,18 @@ const make = (tag, value, className) => {
 };
 const player = get('player');
 const outcomes = {in_progress:'进行中', success:'成功', failure:'失败', uncertain:'无法确认'};
+const finalOutcome = value => value === 'in_progress' ? '结束未判定' : outcomes[value];
 const phases = {waiting:'等待', approaching:'接近盒子', grasping:'尝试抓取', lifting:'提起', retrying:'重新尝试', after_pick:'已完成抓取', unclear:'阶段不明'};
 const decisions = {continue:'继续', retry:'重试', intervene:'干预', finish:'结束', observe:'继续观察'};
 const initial = get('initialData').textContent.trim();
 const live = initial === '<!-- REPORT_DATA -->';
+if (live) {
+  const nav = get('siteNav');
+  nav.hidden = false;
+  for (const link of nav.querySelectorAll('a')) {
+    if (link.pathname === location.pathname) link.setAttribute('aria-current', 'page');
+  }
+}
 let data = live ? {episodes:[]} : JSON.parse(initial);
 let selected = 0;
 let mode = live ? 'latest' : 'playback';
@@ -66,6 +87,7 @@ let runText = '';
 const stamp = value => `${Number(value).toFixed(3)} s`;
 const duration = value => Number.isFinite(value) ? `${value.toFixed(2)} s` : '—';
 const requestDuration = row => duration(row.request_seconds);
+const modelLabel = () => data.model === 'motvlm' ? 'MoTVLM' : data.model;
 const pill = (value, tone) => make('span', value, `pill ${tone || ''}`);
 
 function seek(time) {
@@ -88,14 +110,25 @@ function drawAssessment(row) {
   panel.replaceChildren();
   get('checkHeading').textContent = row ? `S2 判断 · ${stamp(row.observed_at_s)}` : 'S2 判断';
   if (row) {
-    let timing = `Astra 请求耗时 ${requestDuration(row)}`;
+    let timing = `${modelLabel()} 请求耗时 ${requestDuration(row)}`;
     if (Number.isFinite(row.turn_ack_seconds)) timing += ` · 本地确认 ${duration(row.turn_ack_seconds)} · 首个文本 ${duration(row.first_text_seconds)}`;
+    if (Number.isFinite(row.server_elapsed_seconds)) timing += ` · 服务端耗时 ${duration(row.server_elapsed_seconds)}`;
     if (Number.isFinite(row.thread_start_seconds)) timing += ` · 会话创建 ${duration(row.thread_start_seconds)}（单独计时）`;
     if (row.warmup) timing += ` · 纯文本预热 ${duration(row.warmup.turn_completed_seconds)} · 首条视频请求前共等待 ${duration(row.before_first_video_seconds)}`;
     panel.append(make('p', timing, 'check-duration'));
   }
   if (!row || row.error) {
     panel.append(make('p', row?.error ?? '等待第一个视频窗口的判断。', row?.error ? 'error' : ''));
+    if (row) {
+      const input = make('a', '打开该次送入模型的抽帧图', 'input-link');
+      input.href = row.sheet; input.target = '_blank'; input.rel = 'noopener';
+      panel.append(input);
+      if (typeof row.raw_response === 'string') {
+        const details = make('details', null, 'raw-response');
+        details.append(make('summary', '模型原始返回'), make('pre', row.raw_response));
+        panel.append(details);
+      }
+    }
     return;
   }
   const value = row.answer;
@@ -146,17 +179,18 @@ function drawAtTime() {
 function render() {
   const done = data.episodes.reduce((sum, item) => sum + item.checks_completed, 0);
   const total = data.episodes.reduce((sum, item) => sum + item.checks_expected, 0);
+  const attempted = data.episodes.reduce((sum, item) => sum + item.timeline.length, 0);
   const errors = data.episodes.reduce((sum, item) => sum + item.errors.length, 0);
-  if (data.task) get('instruction').textContent = `${data.task} · ${data.model}`;
+  if (data.task) get('instruction').textContent = `${data.task} · ${modelLabel()}`;
   const measured = data.episodes.filter(item => item.checks_completed > 0);
   get('warmupNote').hidden = !measured.length || !measured.every(item => item.timeline[0]?.warmup?.response?.trim() === 'READY');
-  const label = !total ? '等待评测准备' : errors ? '有检查失败' : done === total ? '评测完成' : live ? '评测运行中' : '评测未完成';
-  runText = total ? `${label} · ${done}/${total} 次检查` : label;
+  const label = !total ? '等待评测准备' : attempted === total ? '评测完成' : live ? '评测运行中' : '评测未完成';
+  runText = !total ? label : errors ? `${label} · ${attempted}/${total} 次 · 有效 ${done} 次` : `${label} · ${done}/${total} 次检查`;
   get('runState').textContent = runText;
   get('episodes').replaceChildren(...data.episodes.map((item, index) => {
     const button = make('button', `Episode ${item.episode.split('_').at(-1)}`);
     button.setAttribute('aria-pressed', index === selected);
-    button.append(make('small', `${item.checks_completed}/${item.checks_expected} 次 · ${outcomes[item.final_outcome] ?? (item.errors.length ? '检查失败' : '未结束')}`));
+    button.append(make('small', `${item.checks_completed}/${item.checks_expected} 次 · ${finalOutcome(item.final_outcome) ?? (item.errors.length ? '检查失败' : '未结束')}`));
     button.onclick = () => { selected = index; render(); };
     return button;
   }));
@@ -177,7 +211,8 @@ function render() {
     return button;
   });
   get('timeline').replaceChildren(...(rows.length ? rows : [make('p', '还没有检查记录。')]));
-  get('note').textContent = `每 ${data.window_seconds} 秒提交一组按时间排序的抽帧。视频时间从本 episode 起点计，耗时为每次 Astra 请求从发出到返回的实际用时。页面显示的是模型判断，未与人工真值比较。`;
+  const memory = data.model === 'motvlm' ? 'MoTVLM 接口不保留会话，每次请求附带本段此前通过格式与证据编号检查的近期判断。' : '';
+  get('note').textContent = `每 ${data.window_seconds} 秒提交一组按时间排序的抽帧。视频时间从本 episode 起点计，耗时为请求从发出到返回的实际用时。${memory}页面显示的是模型判断，未与人工真值比较。`;
   currentRow = null;
   setMode(mode);
 }
@@ -189,7 +224,7 @@ if (live) {
   let lastPayload = '';
   async function update() {
     try {
-      const response = await fetch('/api', {cache:'no-store'});
+      const response = await fetch('api', {cache:'no-store'});
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.text();
       if (lastPayload !== payload) {

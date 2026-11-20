@@ -1,6 +1,6 @@
 import unittest
 
-from evaluate import ROOT, load_tasks, rows_and_summary
+from image_eval.evaluate import ROOT, load_tasks, rows_and_summary
 
 
 class TaskEvaluationTests(unittest.TestCase):

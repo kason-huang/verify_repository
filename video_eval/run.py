@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Replay the five LeRobot cam_high episodes to Astra, one conversation per episode."""
+"""Replay the five LeRobot cam_high episodes to Astra or MoTVLM."""
 
 import argparse
 import asyncio
 import hashlib
 import json
+import re
 import subprocess
 import tempfile
 import time
@@ -14,6 +15,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from reporting import write_report
+from motvlm import MODEL_ID as MOTVLM_MODEL, MoTVLM, configured_url
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = 'use the right arm to pick up one box'
@@ -220,21 +222,35 @@ class Astra:
 
 
 def validate(answer, known_ids):
-    if set(answer) != set(OUTPUT_SCHEMA['required']):
-        raise ValueError('Astra response does not match the required output fields')
+    if not isinstance(answer, dict) or set(answer) != set(OUTPUT_SCHEMA['required']):
+        raise ValueError('Model response does not match the required output fields')
     if answer['phase'] not in PHASES or answer['outcome'] not in OUTCOMES or answer['decision'] not in ACTIONS:
-        raise ValueError('Unknown Astra decision, outcome or phase')
+        raise ValueError('Unknown model decision, outcome or phase')
     if type(answer['needs_intervention']) is not bool:
         raise ValueError('needs_intervention must be boolean')
     evidence = answer['evidence']
-    if not 1 <= len(evidence) <= 2 or any(item['frame_id'] not in known_ids or not item['observation'].strip()
-                                          for item in evidence):
-        raise ValueError('Astra did not cite one or two valid observed frames')
+    if not isinstance(evidence, list) or not 1 <= len(evidence) <= 2 or any(
+        not isinstance(item, dict) or not isinstance(item.get('frame_id'), str) or item['frame_id'] not in known_ids
+        or not isinstance(item.get('observation'), str) or not item['observation'].strip() for item in evidence
+    ):
+        raise ValueError('Model did not cite one or two valid observed frames')
     if answer['needs_intervention'] != (answer['decision'] == 'intervene'):
-        raise ValueError('Astra intervention judgment and decision disagree')
+        raise ValueError('Model intervention judgment and decision disagree')
 
 
-async def observe_window(astra, thread, episode, window, known_ids):
+def parse_answer(raw):
+    if not isinstance(raw, str):
+        raise ValueError('Model returned no text')
+    text = raw.strip()
+    fenced = re.fullmatch(r'```(?:json)?\s*(.*?)\s*```', text, flags=re.IGNORECASE | re.DOTALL)
+    return json.loads(fenced.group(1) if fenced else text)
+
+
+def should_stop(backend, row):
+    return 'error' in row and not (isinstance(backend, MoTVLM) and row.get('error_kind') == 'invalid_response')
+
+
+async def observe_window(backend, thread, episode, window, known_ids):
     known_ids.update(window['frame_ids'])
     frames = ', '.join(f'{id_}={episode["frames"][id_]["time_s"]:.3f}s' for id_ in window['frame_ids'])
     cutoff = window['observed_at_s']
@@ -244,14 +260,22 @@ async def observe_window(astra, thread, episode, window, known_ids):
     start = time.monotonic()
     row = {**window, 'thread_id': thread, 'request_started_at': datetime.now(timezone.utc).isoformat()}
     try:
-        turn, raw, timings = await astra.observe(thread, text, window['sheet'])
+        turn, raw, timings = await backend.observe(thread, text, window['sheet'])
+    except (OSError, ValueError, RuntimeError, asyncio.TimeoutError) as error:
+        row.update(error=str(error) or type(error).__name__, error_kind='request_error')
+    else:
         row.update(turn_id=turn, raw_response=raw, **timings)
-        answer = json.loads(raw)
-        validate(answer, known_ids)
-        answer['evidence'] = [dict(item, **episode['frames'][item['frame_id']]) for item in answer['evidence']]
-        row['answer'] = answer
-    except (ValueError, KeyError, TypeError, RuntimeError, asyncio.TimeoutError) as error:
-        row['error'] = str(error) or type(error).__name__
+        try:
+            if row.get('output_limit_reached'):
+                raise ValueError('Model response hit the token limit')
+            answer = parse_answer(raw)
+            validate(answer, known_ids)
+            if isinstance(backend, MoTVLM):
+                backend.remember(thread, answer)
+            row['answer'] = {**answer, 'evidence': [dict(item, **episode['frames'][item['frame_id']])
+                                                   for item in answer['evidence']]}
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            row.update(error=str(error) or type(error).__name__, error_kind='invalid_response')
     row['request_seconds'] = round(time.monotonic() - start, 3)
     return row
 
@@ -272,14 +296,14 @@ async def start_episode(astra, neutral_cwd, warmup=False):
     return thread, started_at, timing
 
 
-async def evaluate_episode(astra, episode, output, neutral_cwd, session=None):
+async def evaluate_episode(backend, episode, output, neutral_cwd, session=None):
     name = episode['episode']
     with (output / name / 'timeline.jsonl').open('w', encoding='utf-8') as log:
-        thread, started_at, timing = session or await start_episode(astra, neutral_cwd)
+        thread, started_at, timing = session or await start_episode(backend, neutral_cwd)
         known_ids = set()
         for window in episode['windows']:
             setup_wait = time.monotonic() - started_at
-            row = await observe_window(astra, thread, episode, window, known_ids)
+            row = await observe_window(backend, thread, episode, window, known_ids)
             if window['index'] == 0:
                 row.update(timing, before_first_video_seconds=round(setup_wait, 3))
             log.write(json.dumps(row, ensure_ascii=False) + '\n')
@@ -287,7 +311,7 @@ async def evaluate_episode(astra, episode, output, neutral_cwd, session=None):
             cutoff = row['observed_at_s']
             state = row['answer']['outcome'] if 'answer' in row else row['error']
             print(f'{name} {cutoff:6.3f}s {state} ({row["request_seconds"]:.1f}s)', flush=True)
-            if 'error' in row:
+            if should_stop(backend, row):
                 raise RuntimeError(f'{name} at {cutoff:.3f}s: {row["error"]}')
 
 
@@ -312,8 +336,27 @@ async def open_astra(log_path, timeout, default_model=MODEL):
             await astra.reader
 
 
+async def open_motvlm(url, timeout, directory):
+    backend = MoTVLM(url, timeout, RULES, OUTPUT_SCHEMA)
+    health = await backend.health()
+    (directory / 'health.json').write_text(json.dumps(health, indent=2) + '\n', encoding='utf-8')
+    return backend
+
+
 async def run(episodes, output, args):
+    if args.model == MOTVLM_MODEL:
+        backend = await open_motvlm(args.motvlm_url, args.timeout, output)
+        for item in episodes:
+            await evaluate_episode(backend, item, output, None)
+        return []
     async with open_astra(output / 'codex.log', args.timeout) as (astra, cwd):
+        if args.serial:
+            for item in episodes:
+                session = await start_episode(astra, cwd, warmup=args.warmup)
+                if args.warmup:
+                    print(f'{item["episode"]} Astra warmup complete. Sending its first window.', flush=True)
+                await evaluate_episode(astra, item, output, cwd, session)
+            return []
         sessions = [None] * len(episodes)
         if args.warmup:
             sessions = await asyncio.gather(*(start_episode(astra, cwd, warmup=True) for _ in episodes))
@@ -327,10 +370,13 @@ async def run(episodes, output, args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--videos', type=Path, default=ROOT / 'videos/box_pick_right_cam_high_5_episodes')
-    parser.add_argument('--output', type=Path, default=ROOT / 'results/video-astra-v1')
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--model', choices=[MODEL, MOTVLM_MODEL], default=MODEL)
+    parser.add_argument('--motvlm-url', help='Override the endpoint configured in image_eval/tasks.json.')
     parser.add_argument('--ffmpeg', default='ffmpeg')
     parser.add_argument('--ffprobe', default='ffprobe')
     parser.add_argument('--timeout', type=float, default=120)
+    parser.add_argument('--serial', action='store_true', help='Run one Astra episode and one model request at a time.')
     parser.add_argument('--warmup', action=argparse.BooleanOptionalAction, default=True,
                         help='Send one text-only warmup in each episode thread before evaluating (default: on).')
     args = parser.parse_args()
@@ -338,13 +384,21 @@ def main():
     for video in videos:
         if not video.is_file():
             parser.error(f'Missing episode: {video}')
-    output = args.output.resolve()
+    if args.model == MOTVLM_MODEL:
+        args.warmup = False
+        args.motvlm_url = configured_url(args.motvlm_url)
+    default_output = ROOT / 'results' / ('video-motvlm-v1' if args.model == MOTVLM_MODEL else 'video-astra-v1')
+    output = (args.output or default_output).resolve()
     output.mkdir(parents=True)
     episodes = [prepare(video, output / video.stem, args.ffmpeg, args.ffprobe) for video in videos]
-    config = {'task': TASK, 'model': MODEL, 'effort': EFFORT, 'rules': RULES, 'schema': OUTPUT_SCHEMA,
+    config = {'task': TASK, 'model': args.model, 'effort': EFFORT if args.model == MODEL else None,
+              'rules': RULES, 'schema': OUTPUT_SCHEMA,
               'warmup_prompt': WARMUP_PROMPT if args.warmup else None,
+              'parallel_episodes': 1 if args.serial or args.model == MOTVLM_MODEL else len(episodes),
               'window_seconds': WINDOW_SECONDS, 'sample_every_frames': SAMPLE_EVERY_FRAMES,
               'episodes': episodes}
+    if args.model == MOTVLM_MODEL:
+        config.update(motvlm_url=args.motvlm_url, history='recent accepted observations plus first success')
     (output / 'config.json').write_text(json.dumps(config, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     try:
         failures = asyncio.run(run(episodes, output, args))

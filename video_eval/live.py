@@ -7,18 +7,20 @@ from copy import deepcopy
 from threading import Condition, Thread
 from uuid import uuid4
 
+from motvlm import MODEL_ID as MOTVLM_MODEL
 from reporting import asset_url
-from run import WARMUP_PROMPT, observe_window, open_astra, warmup_thread
+from run import WARMUP_PROMPT, observe_window, open_astra, open_motvlm, should_stop, warmup_thread
 
 IDLE_SECONDS = 180
 
 
 class LiveRun:
-    def __init__(self, episode, model, output, warmup=False):
+    def __init__(self, episode, model, output, warmup=False, motvlm_url=None):
         self.id = uuid4().hex
         self.episode = episode
         self.model = model
         self.output = output
+        self.motvlm_url = motvlm_url
         self.warmup_requested = warmup
         self.warmup_started_at = None
         self.warmup = None
@@ -126,41 +128,47 @@ class LiveRun:
             return True
 
     async def monitor(self):
+        if self.model == MOTVLM_MODEL:
+            backend = await open_motvlm(self.motvlm_url, timeout=120, directory=self.directory)
+            await self.monitor_thread(backend, await backend.start())
+            return
         async with open_astra(self.directory / 'codex.log', timeout=120, default_model=self.model) as (astra, cwd):
-            thread = await astra.start(cwd, self.model)
-            with self.condition:
-                if self.stopping:
-                    return
-                self.status = 'warming' if self.warmup_requested else 'waiting'
-                if self.warmup_requested:
-                    self.warmup_started_at = time.monotonic()
-            if self.warmup_requested:
-                info = await warmup_thread(astra, thread)
-                (self.directory / 'warmup.json').write_text(json.dumps({'thread_id': thread, **info}, indent=2) + '\n')
-                with self.condition:
-                    self.warmup = info
-                    self.warmup_started_at = None
-                    self.last_advance = time.monotonic()
-                    self.status = 'ready'
-            episode = await asyncio.to_thread(self.wait_for_episode)
-            if episode is None:
+            await self.monitor_thread(astra, await astra.start(cwd, self.model))
+
+    async def monitor_thread(self, backend, thread):
+        with self.condition:
+            if self.stopping:
                 return
-            known = set()
-            with (self.directory / 'timeline.jsonl').open('w', encoding='utf-8') as log:
-                for index, window in enumerate(episode['windows']):
-                    if not await asyncio.to_thread(self.wait_for_window, index):
-                        break
-                    row = await observe_window(astra, thread, episode, window, known)
-                    with self.condition:
-                        row['queue_seconds'] = round(self.started_at - self.queued_at[index], 3)
-                        row['playhead_at_reply_s'] = self.playhead
-                        log.write(json.dumps(row, ensure_ascii=False) + '\n')
-                        log.flush()
-                        self.rows.append(row)
-                        self.in_flight = self.started_at = None
-                        self.status = 'waiting'
-                    if 'error' in row:
-                        raise RuntimeError(row['error'])
+            self.status = 'warming' if self.warmup_requested else 'waiting'
+            if self.warmup_requested:
+                self.warmup_started_at = time.monotonic()
+        if self.warmup_requested:
+            info = await warmup_thread(backend, thread)
+            (self.directory / 'warmup.json').write_text(json.dumps({'thread_id': thread, **info}, indent=2) + '\n')
+            with self.condition:
+                self.warmup = info
+                self.warmup_started_at = None
+                self.last_advance = time.monotonic()
+                self.status = 'ready'
+        episode = await asyncio.to_thread(self.wait_for_episode)
+        if episode is None:
+            return
+        known = set()
+        with (self.directory / 'timeline.jsonl').open('w', encoding='utf-8') as log:
+            for index, window in enumerate(episode['windows']):
+                if not await asyncio.to_thread(self.wait_for_window, index):
+                    break
+                row = await observe_window(backend, thread, episode, window, known)
+                with self.condition:
+                    row['queue_seconds'] = round(self.started_at - self.queued_at[index], 3)
+                    row['playhead_at_reply_s'] = self.playhead
+                    log.write(json.dumps(row, ensure_ascii=False) + '\n')
+                    log.flush()
+                    self.rows.append(row)
+                    self.in_flight = self.started_at = None
+                    self.status = 'waiting'
+                if should_stop(backend, row):
+                    raise RuntimeError(row['error'])
 
     def run(self):
         try:

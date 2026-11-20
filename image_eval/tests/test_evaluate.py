@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import evaluate
-from evaluate import ROOT, load_tasks, parse_answer, rows_and_summary
+from image_eval import evaluate
+from image_eval.evaluate import ROOT, load_tasks, parse_answer, rows_and_summary
 
 
 class EvaluationTests(unittest.TestCase):
@@ -48,7 +48,7 @@ class EvaluationTests(unittest.TestCase):
         health = {"ready": True, "busy": False}
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            with patch("evaluate.request_json", side_effect=[health, *answers]) as api:
+            with patch.object(evaluate, "request_json", side_effect=[health, *answers]) as api:
                 self.assertEqual(self.invoke("run", output), 0)
             self.assertEqual(api.call_count, len(expected) + 1)  # health + configured requests
             for call, (task, case) in zip(api.call_args_list[1:], expected):
@@ -59,10 +59,10 @@ class EvaluationTests(unittest.TestCase):
                 self.assertEqual(base64.b64decode(payload["images"][0].split(",", 1)[1]),
                                  (ROOT / "images" / case["file"]).read_bytes())
             original_log = (output / "responses.jsonl").read_bytes()
-            with patch("evaluate.request_json", return_value=health) as api:
+            with patch.object(evaluate, "request_json", return_value=health) as api:
                 self.assertEqual(self.invoke("run", output), 0)
                 self.assertEqual(api.call_count, 1)  # no inference requests on resume
-            with patch("evaluate.request_json") as api:
+            with patch.object(evaluate, "request_json") as api:
                 self.assertEqual(self.invoke("report", output), 0)
                 api.assert_not_called()
             self.assertEqual((output / "responses.jsonl").read_bytes(), original_log)
@@ -74,7 +74,7 @@ class EvaluationTests(unittest.TestCase):
     def test_request_failure_is_saved_and_stops_the_run(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            with patch("evaluate.request_json", side_effect=[{"ready": True}, TimeoutError("timeout")]) as api:
+            with patch.object(evaluate, "request_json", side_effect=[{"ready": True}, TimeoutError("timeout")]) as api:
                 self.assertEqual(self.invoke("run", output), 1)
                 self.assertEqual(api.call_count, 2)
             records = [json.loads(line) for line in (output / "responses.jsonl").read_text().splitlines()]
@@ -88,7 +88,7 @@ class EvaluationTests(unittest.TestCase):
             config["mapping_confirmed"] = False
             path = Path(directory) / "unconfirmed.json"
             path.write_text(json.dumps(config))
-            with patch("evaluate.request_json") as api, contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(evaluate, "request_json") as api, contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
                     self.invoke("run", Path(directory) / "output", tasks=path)
                 api.assert_not_called()

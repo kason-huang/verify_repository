@@ -16,7 +16,7 @@ def read_rows(path):
             if line.endswith('\n')]
 
 
-def report_data(output, config, live=False):
+def report_data(output, config, live=False, media_prefix='/media/'):
     episodes = []
     for item in config['episodes']:
         name = item['episode']
@@ -33,22 +33,22 @@ def report_data(output, config, live=False):
         }
         video = '/video/' + quote(Path(item['video']).name) if live else quote(relpath(item['video'], output))
         for row in rows:
-            row['sheet'] = asset_url(output, row['sheet'], live)
+            row['sheet'] = asset_url(output, row['sheet'], live, media_prefix)
             for evidence in row.get('answer', {}).get('evidence', []):
-                evidence['path'] = asset_url(output, evidence['path'], live)
+                evidence['path'] = asset_url(output, evidence['path'], live, media_prefix)
         episodes.append({**summary, 'video': video, 'duration_s': item['duration_s'], 'timeline': rows})
     return {'task': config['task'], 'model': config['model'], 'window_seconds': config['window_seconds'],
             'episodes': episodes}
 
 
-def asset_url(output, path, live):
-    return ('/media/' if live else '') + quote(relpath(path, output))
+def asset_url(output, path, live, media_prefix='/media/'):
+    return (media_prefix if live else '') + quote(relpath(Path(path).resolve(), output))
 
 
 def write_report(output, config):
     data = report_data(output, config)
     embedded = json.dumps(data, ensure_ascii=False).replace('<', '\\u003c')
-    viewer = VIEWER.read_text(encoding='utf-8').replace('<!-- REPORT_DATA -->', embedded)
+    viewer = VIEWER.read_text(encoding='utf-8').replace('<!-- REPORT_DATA -->', embedded, 1)
     (output / 'report.html').write_text(viewer, encoding='utf-8')
     summary = [{key: value for key, value in row.items() if key not in {'video', 'duration_s', 'timeline'}}
                for row in data['episodes']]

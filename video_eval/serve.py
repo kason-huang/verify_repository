@@ -13,11 +13,30 @@ from threading import Lock
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from live import LiveRun
+from motvlm import MODEL_ID as MOTVLM_MODEL, configured_url
 from reporting import VIEWER, report_data
 from run import MODEL, TASK
 
 ROOT = Path(__file__).resolve().parents[1]
 LIVE_VIEWER = Path(__file__).with_name('live.html')
+
+COMPARISON_REPORT = ROOT / 'results/video-model-comparison/report.html'
+COMPARISON_ASSET = r'video-[a-z0-9-]+/episode_\d{6}/frames/F\d{6}\.jpg'
+COMPARISON_NAV = '''<nav class="site-nav" aria-label="评测导航">
+  <a href="/">Astra 离线报告</a>
+  <a href="/reports/motvlm/">MoTVLM 离线报告</a>
+  <a href="/reports/comparison/" aria-current="page">对比报告</a>
+  <a href="/live">实时监控</a>
+</nav>'''
+
+
+def comparison_page():
+    page = COMPARISON_REPORT.read_text(encoding='utf-8')
+    # The saved report uses relative file links so it can still be opened offline.
+    page = re.sub(r'<nav\b[^>]*>.*?</nav>', lambda _: COMPARISON_NAV, page, count=1, flags=re.DOTALL)
+    page = re.sub(rf'(href|src)="\.\./({COMPARISON_ASSET})"', r'\1="/reports/comparison/evidence/\2"', page)
+    style = VIEWER.read_text(encoding='utf-8').split('.site-nav{', 1)[1].split('</style>', 1)[0]
+    return page.replace('</style>', '.site-nav{' + style + '</style>', 1)
 
 
 def main():
@@ -26,14 +45,17 @@ def main():
     parser.add_argument('--videos', type=Path, default=ROOT / 'videos/box_pick_right_cam_high_5_episodes')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--model', action='append', default=[], help='Enable an additional Codex model ID in the live viewer.')
+    parser.add_argument('--motvlm-url', help='Override the MoTVLM endpoint configured in image_eval/tasks.json.')
+    parser.add_argument('--motvlm-output', type=Path, default=ROOT / 'results/video-motvlm-v1')
     args = parser.parse_args()
     output, videos = args.output.resolve(), args.videos.resolve()
-    models = list(dict.fromkeys([MODEL, *args.model]))
+    models = list(dict.fromkeys([MODEL, MOTVLM_MODEL, *args.model]))
+    motvlm_url, motvlm_output = configured_url(args.motvlm_url), args.motvlm_output.resolve()
     active = None
     lock = Lock()
 
-    def load_config():
-        return json.loads((output / 'config.json').read_text(encoding='utf-8'))
+    def load_config(directory=output):
+        return json.loads((directory / 'config.json').read_text(encoding='utf-8'))
 
     def load_episode(episode_id):
         episode = next(item for item in load_config()['episodes'] if item['episode'] == episode_id)
@@ -48,8 +70,18 @@ def main():
         def do_GET(self):
             target = urlsplit(self.path)
             url = unquote(target.path)
-            if url == '/':
+            if url in {'/', '/reports/motvlm/'}:
                 self.reply(VIEWER.read_bytes(), 'text/html; charset=utf-8')
+            elif url in {'/reports/comparison', '/reports/comparison/'}:
+                try:
+                    page = comparison_page()
+                except FileNotFoundError:
+                    self.send_error(404, 'Comparison report has not been generated')
+                    return
+                self.reply(page.encode('utf-8'), 'text/html; charset=utf-8')
+            elif url.startswith('/reports/comparison/evidence/'):
+                name = url.removeprefix('/reports/comparison/evidence/')
+                self.file(ROOT / 'results', name, COMPARISON_ASSET)
             elif url == '/live':
                 self.reply(LIVE_VIEWER.read_bytes(), 'text/html; charset=utf-8')
             elif url == '/live/options':
@@ -74,9 +106,11 @@ def main():
                     current = active
                 state = current.snapshot() if current is not None else None
                 self.json_reply(state if state and state['status'] not in {'complete', 'error', 'stopped'} else None)
-            elif url == '/api':
+            elif url in {'/api', '/reports/motvlm/api'}:
+                directory = motvlm_output if url == '/reports/motvlm/api' else output
+                media = '/reports/motvlm/media/' if url == '/reports/motvlm/api' else '/media/'
                 try:
-                    data = report_data(output, load_config(), live=True)
+                    data = report_data(directory, load_config(directory), live=True, media_prefix=media)
                 except (FileNotFoundError, json.JSONDecodeError):
                     data = {'episodes': []}
                 self.json_reply(data)
@@ -84,6 +118,9 @@ def main():
                 self.file(videos, url.removeprefix('/video/'), r'episode_\d{6}\.mp4')
             elif url.startswith('/media/'):
                 self.file(output, url.removeprefix('/media/'), r'episode_\d{6}/(?:frames/F\d{6}|sheets/\d{3})\.jpg')
+            elif url.startswith('/reports/motvlm/media/'):
+                self.file(motvlm_output, url.removeprefix('/reports/motvlm/media/'),
+                          r'episode_\d{6}/(?:frames/F\d{6}|sheets/\d{3})\.jpg')
             else:
                 self.send_error(404)
 
@@ -113,6 +150,9 @@ def main():
                 if type(warmup) is not bool:
                     self.json_reply({'error': '无效的预热选项。'}, 400)
                     return
+                if warmup and model == MOTVLM_MODEL:
+                    self.json_reply({'error': 'MoTVLM 使用无会话接口，请直接开始监控。'}, 400)
+                    return
                 try:
                     episode_id = body.get('episode')
                     episode = None if warmup and episode_id is None else load_episode(episode_id)
@@ -128,7 +168,7 @@ def main():
                             return
                         self.json_reply({'error': '已有会话在运行。请先停止并等待当前请求结束。'}, 409)
                         return
-                    active = current = LiveRun(episode, model, output, warmup=warmup)
+                    active = current = LiveRun(episode, model, output, warmup=warmup, motvlm_url=motvlm_url)
             elif self.path in {'/live/play', '/live/advance', '/live/stop'}:
                 with lock:
                     current = active
